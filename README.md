@@ -1,6 +1,6 @@
 # Groot
 
-Groot is a multi-tenant event hub. Phase 0 bootstraps the repository, local infrastructure, and a minimal Go API with health and readiness checks for PostgreSQL, Kafka, and Temporal.
+Groot is a multi-tenant event hub. Phase 3 adds Temporal-backed delivery execution, retry handling, and delivery job status tracking.
 
 ## Stack
 
@@ -15,6 +15,7 @@ Groot is a multi-tenant event hub. Phase 0 bootstraps the repository, local infr
 ```sh
 cp .env.example .env
 make up
+make migrate
 make run
 curl localhost:8081/healthz
 ```
@@ -29,7 +30,7 @@ The service reads all runtime configuration from environment variables.
 | --- | --- | --- |
 | `GROOT_HTTP_ADDR` | HTTP listen address | `:8081` |
 | `POSTGRES_DSN` | PostgreSQL connection string | `postgres://groot:groot@postgres:5432/groot?sslmode=disable` |
-| `KAFKA_BROKERS` | Comma-separated Kafka brokers | `kafka:9092` |
+| `KAFKA_BROKERS` | Comma-separated Kafka brokers | `kafka:19092` |
 | `TEMPORAL_ADDRESS` | Temporal frontend address | `temporal:7233` |
 | `TEMPORAL_NAMESPACE` | Temporal namespace | `default` |
 
@@ -52,12 +53,71 @@ The service reads all runtime configuration from environment variables.
 - `make lint`: run `go vet ./...`
 - `make fmt`: run `gofmt` on Go sources
 - `make health`: call `GET /healthz`
+- `make migrate`: apply SQL migrations to the local PostgreSQL container
 
 ## API Endpoints
 
 - `GET /healthz`: returns `{"status":"ok"}`
 - `GET /readyz`: checks PostgreSQL, Kafka, and Temporal readiness and returns HTTP 200 on success
+- `POST /tenants`: create a tenant and return the generated API key once
+- `GET /tenants`: list tenants
+- `GET /tenants/{tenant_id}`: fetch one tenant
+- `POST /events`: authenticate with `Authorization: Bearer <api_key>` and publish an event to Kafka
+- `POST /connected-apps`: create a connected app for the authenticated tenant
+- `GET /connected-apps`: list connected apps for the authenticated tenant
+- `POST /subscriptions`: create a subscription for the authenticated tenant
+- `GET /subscriptions`: list subscriptions for the authenticated tenant
+
+## Tenant and Event Flow
+
+Create a tenant:
+
+```sh
+curl -X POST localhost:8081/tenants \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"example"}'
+```
+
+Publish an event with the returned API key:
+
+```sh
+curl -X POST localhost:8081/events \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <api_key>' \
+  -d '{"type":"example.event","source":"manual","payload":{"hello":"world"}}'
+```
+
+Create a connected app and subscription:
+
+```sh
+curl -X POST localhost:8081/connected-apps \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <api_key>' \
+  -d '{"name":"example-app","destination_url":"https://example.com/webhook"}'
+
+curl -X POST localhost:8081/subscriptions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <api_key>' \
+  -d '{"connected_app_id":"<app_id>","event_type":"example.event","event_source":"manual"}'
+```
+
+The router starts inside the API process and creates `delivery_jobs` rows for matching subscriptions. Phase 2 does not expose a delivery-jobs HTTP API.
+
+Phase 3 extends that flow by:
+
+- persisting canonical events in PostgreSQL
+- polling `delivery_jobs` with status `pending`
+- starting Temporal delivery workflows in-process
+- executing outbound HTTP POST delivery with retries
+- updating delivery job status, attempts, last error, and completion time
+
+The API binary now runs:
+
+- the HTTP API
+- the Kafka router
+- the delivery poller
+- the Temporal worker
 
 ## Migrations
 
-The `migrations/` directory contains a placeholder migration for Phase 0. No schema changes are applied automatically at startup.
+Run `make migrate` after `make up`. Migrations are not applied automatically at startup.

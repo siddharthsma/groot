@@ -7,7 +7,7 @@ import (
 func TestLoad(t *testing.T) {
 	t.Setenv("GROOT_HTTP_ADDR", ":8081")
 	t.Setenv("POSTGRES_DSN", "postgres://groot:groot@postgres:5432/groot?sslmode=disable")
-	t.Setenv("KAFKA_BROKERS", "kafka:9092,kafka-2:9092")
+	t.Setenv("KAFKA_BROKERS", "kafka:19092,kafka-2:19092")
 	t.Setenv("TEMPORAL_ADDRESS", "temporal:7233")
 	t.Setenv("TEMPORAL_NAMESPACE", "default")
 

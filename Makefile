@@ -5,7 +5,7 @@ GO_RUN_ENV = \
 	TEMPORAL_ADDRESS=$${TEMPORAL_ADDRESS:-localhost:7233} \
 	TEMPORAL_NAMESPACE=$${TEMPORAL_NAMESPACE:-default}
 
-.PHONY: up down logs build run test lint fmt health
+.PHONY: up down logs build run test lint fmt health migrate
 
 up:
 	docker compose up -d --build
@@ -33,3 +33,6 @@ fmt:
 
 health:
 	curl -fsS localhost:8081/healthz
+
+migrate:
+	for f in $$(find migrations -type f -name '*.sql' | sort); do docker compose exec -T postgres psql -U groot -d groot < "$$f"; done

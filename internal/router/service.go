@@ -1,0 +1,121 @@
+package router
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/segmentio/kafka-go"
+
+	"groot/internal/delivery"
+	"groot/internal/stream"
+	"groot/internal/subscription"
+	"groot/internal/tenant"
+)
+
+type Store interface {
+	ListMatchingSubscriptions(context.Context, tenant.ID, string, string) ([]subscription.Subscription, error)
+	CreateDeliveryJob(context.Context, delivery.JobRecord) (bool, error)
+}
+
+type Consumer struct {
+	reader *kafka.Reader
+	store  Store
+	logger *slog.Logger
+	now    func() time.Time
+}
+
+func NewConsumer(brokers []string, store Store, logger *slog.Logger) *Consumer {
+	return &Consumer{
+		reader: kafka.NewReader(kafka.ReaderConfig{
+			Brokers: brokers,
+			Topic:   stream.EventsTopic,
+			GroupID: "groot-router",
+		}),
+		store:  store,
+		logger: logger,
+		now:    func() time.Time { return time.Now().UTC() },
+	}
+}
+
+func (c *Consumer) Run(ctx context.Context) error {
+	defer func() {
+		_ = c.reader.Close()
+	}()
+
+	for {
+		msg, err := c.reader.FetchMessage(ctx)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return fmt.Errorf("fetch kafka message: %w", err)
+		}
+
+		if err := c.processMessage(ctx, msg); err != nil {
+			c.logger.Error("router_process_failed", slog.String("error", err.Error()))
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(2 * time.Second):
+			}
+			continue
+		}
+
+		if err := c.reader.CommitMessages(ctx, msg); err != nil {
+			return fmt.Errorf("commit kafka message: %w", err)
+		}
+	}
+}
+
+func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error {
+	var event stream.Event
+	if err := jsonUnmarshal(msg.Value, &event); err != nil {
+		return fmt.Errorf("decode event message: %w", err)
+	}
+
+	c.logger.Info("event_consumed",
+		slog.String("event_id", event.EventID.String()),
+		slog.String("tenant_id", event.TenantID.String()),
+	)
+
+	matches, err := c.store.ListMatchingSubscriptions(ctx, event.TenantID, event.Type, event.Source)
+	if err != nil {
+		return fmt.Errorf("list matching subscriptions: %w", err)
+	}
+
+	for _, sub := range matches {
+		c.logger.Info("subscription_matched",
+			slog.String("event_id", event.EventID.String()),
+			slog.String("tenant_id", event.TenantID.String()),
+			slog.String("subscription_id", sub.ID.String()),
+		)
+
+		created, err := c.store.CreateDeliveryJob(ctx, delivery.JobRecord{
+			ID:             uuid.New(),
+			TenantID:       event.TenantID,
+			SubscriptionID: sub.ID,
+			EventID:        event.EventID,
+			Status:         delivery.StatusPending,
+			CreatedAt:      c.now(),
+		})
+		if err != nil {
+			return fmt.Errorf("create delivery job: %w", err)
+		}
+		if created {
+			c.logger.Info("delivery_job_created",
+				slog.String("event_id", event.EventID.String()),
+				slog.String("tenant_id", event.TenantID.String()),
+				slog.String("subscription_id", sub.ID.String()),
+			)
+		}
+	}
+	return nil
+}
+
+func jsonUnmarshal(data []byte, event *stream.Event) error {
+	return stream.UnmarshalEvent(data, event)
+}
