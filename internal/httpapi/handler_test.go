@@ -9,13 +9,20 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 
 	"groot/internal/connectedapp"
+	"groot/internal/connectorinstance"
+	"groot/internal/connectors/resend"
+	"groot/internal/delivery"
+	"groot/internal/eventquery"
+	"groot/internal/functiondestination"
 	"groot/internal/ingest"
+	"groot/internal/observability"
 	"groot/internal/stream"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
@@ -60,10 +67,38 @@ func (s stubEventService) Ingest(ctx context.Context, req ingest.Request) (strea
 	return s.ingestFn(ctx, req)
 }
 
+type stubEventQueryService struct {
+	listFn func(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]eventquery.Event, error)
+}
+
+func (s stubEventQueryService) List(ctx context.Context, tenantID tenant.ID, eventType, source string, from, to *time.Time, limit int) ([]eventquery.Event, error) {
+	return s.listFn(ctx, tenantID, eventType, source, from, to, limit)
+}
+
 type stubConnectedAppService struct {
 	createFn func(context.Context, tenant.ID, string, string) (connectedapp.App, error)
 	listFn   func(context.Context, tenant.ID) ([]connectedapp.App, error)
 	getFn    func(context.Context, tenant.ID, uuid.UUID) (connectedapp.App, error)
+}
+
+type stubFunctionDestinationService struct {
+	createFn func(context.Context, tenant.ID, string, string) (functiondestination.CreatedDestination, error)
+	listFn   func(context.Context, tenant.ID) ([]functiondestination.Destination, error)
+	getFn    func(context.Context, tenant.ID, uuid.UUID) (functiondestination.Destination, error)
+	deleteFn func(context.Context, tenant.ID, uuid.UUID) error
+}
+
+func (s stubFunctionDestinationService) Create(ctx context.Context, tenantID tenant.ID, name, rawURL string) (functiondestination.CreatedDestination, error) {
+	return s.createFn(ctx, tenantID, name, rawURL)
+}
+func (s stubFunctionDestinationService) List(ctx context.Context, tenantID tenant.ID) ([]functiondestination.Destination, error) {
+	return s.listFn(ctx, tenantID)
+}
+func (s stubFunctionDestinationService) Get(ctx context.Context, tenantID tenant.ID, id uuid.UUID) (functiondestination.Destination, error) {
+	return s.getFn(ctx, tenantID, id)
+}
+func (s stubFunctionDestinationService) Delete(ctx context.Context, tenantID tenant.ID, id uuid.UUID) error {
+	return s.deleteFn(ctx, tenantID, id)
 }
 
 func (s stubConnectedAppService) Create(ctx context.Context, tenantID tenant.ID, name, destinationURL string) (connectedapp.App, error) {
@@ -79,16 +114,73 @@ func (s stubConnectedAppService) Get(ctx context.Context, tenantID tenant.ID, ap
 }
 
 type stubSubscriptionService struct {
-	createFn func(context.Context, tenant.ID, uuid.UUID, string, *string) (subscription.Subscription, error)
+	createFn func(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, string, *string) (subscription.Subscription, error)
 	listFn   func(context.Context, tenant.ID) ([]subscription.Subscription, error)
+	pauseFn  func(context.Context, tenant.ID, uuid.UUID) (subscription.Subscription, error)
+	resumeFn func(context.Context, tenant.ID, uuid.UUID) (subscription.Subscription, error)
 }
 
-func (s stubSubscriptionService) Create(ctx context.Context, tenantID tenant.ID, connectedAppID uuid.UUID, eventType string, eventSource *string) (subscription.Subscription, error) {
-	return s.createFn(ctx, tenantID, connectedAppID, eventType, eventSource)
+func (s stubSubscriptionService) Create(ctx context.Context, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, operation *string, operationParams json.RawMessage, eventType string, eventSource *string) (subscription.Subscription, error) {
+	return s.createFn(ctx, tenantID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, operation, operationParams, eventType, eventSource)
 }
 
 func (s stubSubscriptionService) List(ctx context.Context, tenantID tenant.ID) ([]subscription.Subscription, error) {
 	return s.listFn(ctx, tenantID)
+}
+
+func (s stubSubscriptionService) Pause(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID) (subscription.Subscription, error) {
+	return s.pauseFn(ctx, tenantID, subscriptionID)
+}
+
+func (s stubSubscriptionService) Resume(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID) (subscription.Subscription, error) {
+	return s.resumeFn(ctx, tenantID, subscriptionID)
+}
+
+type stubDeliveryService struct {
+	listFn  func(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, int) ([]delivery.Job, error)
+	getFn   func(context.Context, tenant.ID, uuid.UUID) (delivery.Job, error)
+	retryFn func(context.Context, tenant.ID, uuid.UUID) (delivery.Job, error)
+}
+
+type stubConnectorInstanceService struct {
+	createFn func(context.Context, tenant.ID, string, json.RawMessage) (connectorinstance.Instance, error)
+	listFn   func(context.Context, tenant.ID) ([]connectorinstance.Instance, error)
+}
+
+func (s stubConnectorInstanceService) Create(ctx context.Context, tenantID tenant.ID, connectorName string, config json.RawMessage) (connectorinstance.Instance, error) {
+	return s.createFn(ctx, tenantID, connectorName, config)
+}
+
+func (s stubConnectorInstanceService) List(ctx context.Context, tenantID tenant.ID) ([]connectorinstance.Instance, error) {
+	return s.listFn(ctx, tenantID)
+}
+
+type stubResendService struct {
+	bootstrapFn func(context.Context) (string, error)
+	enableFn    func(context.Context, tenant.ID) (resend.EnableResult, error)
+	webhookFn   func(context.Context, []byte, http.Header) error
+}
+
+func (s stubResendService) Bootstrap(ctx context.Context) (string, error) {
+	return s.bootstrapFn(ctx)
+}
+func (s stubResendService) Enable(ctx context.Context, tenantID tenant.ID) (resend.EnableResult, error) {
+	return s.enableFn(ctx, tenantID)
+}
+func (s stubResendService) HandleWebhook(ctx context.Context, rawBody []byte, headers http.Header) error {
+	return s.webhookFn(ctx, rawBody, headers)
+}
+
+func (s stubDeliveryService) List(ctx context.Context, tenantID tenant.ID, status string, subscriptionID, eventID *uuid.UUID, limit int) ([]delivery.Job, error) {
+	return s.listFn(ctx, tenantID, status, subscriptionID, eventID, limit)
+}
+
+func (s stubDeliveryService) Get(ctx context.Context, tenantID tenant.ID, jobID uuid.UUID) (delivery.Job, error) {
+	return s.getFn(ctx, tenantID, jobID)
+}
+
+func (s stubDeliveryService) Retry(ctx context.Context, tenantID tenant.ID, jobID uuid.UUID) (delivery.Job, error) {
+	return s.retryFn(ctx, tenantID, jobID)
 }
 
 func testLogger() *slog.Logger {
@@ -314,7 +406,7 @@ func TestCreateSubscriptionAppNotFound(t *testing.T) {
 			authenticateFn: func(context.Context, string) (tenant.Tenant, error) { return tenant.Tenant{ID: tenantID}, nil },
 		},
 		Subs: stubSubscriptionService{
-			createFn: func(context.Context, tenant.ID, uuid.UUID, string, *string) (subscription.Subscription, error) {
+			createFn: func(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, string, *string) (subscription.Subscription, error) {
 				return subscription.Subscription{}, subscription.ErrConnectedAppNotFound
 			},
 		},
@@ -322,6 +414,139 @@ func TestCreateSubscriptionAppNotFound(t *testing.T) {
 
 	handler.ServeHTTP(rec, req)
 	if got, want := rec.Code, http.StatusNotFound; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+}
+
+func TestMetricsEndpoint(t *testing.T) {
+	metrics := observability.NewMetrics()
+	metrics.IncEventsReceived()
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+
+	NewHandler(Options{Logger: testLogger(), Metrics: metrics}).ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusOK; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+	if !strings.Contains(rec.Body.String(), "groot_events_received_total 1") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestCreateFunctionDestination(t *testing.T) {
+	tenantID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	req := httptest.NewRequest(http.MethodPost, "/functions", bytes.NewBufferString(`{"name":"order_processor","url":"https://example.com/fn"}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+
+	handler := NewHandler(Options{
+		Logger: testLogger(),
+		Tenants: stubTenantService{
+			authenticateFn: func(context.Context, string) (tenant.Tenant, error) { return tenant.Tenant{ID: tenantID}, nil },
+		},
+		Functions: stubFunctionDestinationService{
+			createFn: func(_ context.Context, gotTenantID tenant.ID, name, rawURL string) (functiondestination.CreatedDestination, error) {
+				if gotTenantID != tenantID || name != "order_processor" || rawURL != "https://example.com/fn" {
+					t.Fatal("unexpected function args")
+				}
+				return functiondestination.CreatedDestination{
+					Destination: functiondestination.Destination{ID: uuid.MustParse("33333333-3333-3333-3333-333333333333"), Name: name, URL: rawURL},
+					Secret:      "generated",
+				}, nil
+			},
+		},
+	})
+
+	handler.ServeHTTP(rec, req)
+	if got, want := rec.Code, http.StatusOK; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+}
+
+func TestCreateConnectorInstance(t *testing.T) {
+	tenantID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	req := httptest.NewRequest(http.MethodPost, "/connector-instances", bytes.NewBufferString(`{"connector_name":"slack","config":{"bot_token":"xoxb-test"}}`))
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+
+	handler := NewHandler(Options{
+		Logger: testLogger(),
+		Tenants: stubTenantService{
+			authenticateFn: func(context.Context, string) (tenant.Tenant, error) { return tenant.Tenant{ID: tenantID}, nil },
+		},
+		ConnectorInstances: stubConnectorInstanceService{
+			createFn: func(_ context.Context, gotTenantID tenant.ID, connectorName string, config json.RawMessage) (connectorinstance.Instance, error) {
+				if gotTenantID != tenantID || connectorName != "slack" || !strings.Contains(string(config), "xoxb-test") {
+					t.Fatal("unexpected connector instance args")
+				}
+				return connectorinstance.Instance{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), ConnectorName: connectorName}, nil
+			},
+		},
+	})
+
+	handler.ServeHTTP(rec, req)
+	if got, want := rec.Code, http.StatusOK; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+}
+
+func TestDeliveryIncludesConnectorFields(t *testing.T) {
+	tenantID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
+	deliveryID := uuid.MustParse("55555555-5555-5555-5555-555555555555")
+	statusCode := 200
+	externalID := "12345.6789"
+	req := httptest.NewRequest(http.MethodGet, "/deliveries/"+deliveryID.String(), nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	rec := httptest.NewRecorder()
+
+	handler := NewHandler(Options{
+		Logger: testLogger(),
+		Tenants: stubTenantService{
+			authenticateFn: func(context.Context, string) (tenant.Tenant, error) { return tenant.Tenant{ID: tenantID}, nil },
+		},
+		Deliveries: stubDeliveryService{
+			getFn: func(context.Context, tenant.ID, uuid.UUID) (delivery.Job, error) {
+				return delivery.Job{
+					ID:             deliveryID,
+					SubscriptionID: uuid.MustParse("66666666-6666-6666-6666-666666666666"),
+					EventID:        uuid.MustParse("77777777-7777-7777-7777-777777777777"),
+					Status:         delivery.StatusSucceeded,
+					ExternalID:     &externalID,
+					LastStatusCode: &statusCode,
+					CreatedAt:      time.Now().UTC(),
+				}, nil
+			},
+		},
+	})
+
+	handler.ServeHTTP(rec, req)
+	if got, want := rec.Code, http.StatusOK; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+	if !strings.Contains(rec.Body.String(), `"external_id":"12345.6789"`) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"last_status_code":200`) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestResendBootstrapRequiresSystemAuth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/system/resend/bootstrap", nil)
+	rec := httptest.NewRecorder()
+
+	handler := NewHandler(Options{
+		Logger:       testLogger(),
+		SystemAPIKey: "system-secret",
+		Resend: stubResendService{
+			bootstrapFn: func(context.Context) (string, error) { return "bootstrapped", nil },
+		},
+	})
+
+	handler.ServeHTTP(rec, req)
+	if got, want := rec.Code, http.StatusUnauthorized; got != want {
 		t.Fatalf("status = %d, want %d", got, want)
 	}
 }

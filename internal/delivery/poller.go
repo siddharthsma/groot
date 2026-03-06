@@ -2,13 +2,17 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
+
+	"groot/internal/config"
 )
 
 const (
@@ -27,10 +31,16 @@ type WorkflowStarter interface {
 }
 
 type Poller struct {
-	store  Store
-	client WorkflowStarter
-	logger *slog.Logger
-	ticker func(time.Duration) ticker
+	store   Store
+	client  WorkflowStarter
+	logger  *slog.Logger
+	retry   config.DeliveryRetryConfig
+	metrics Metrics
+	ticker  func(time.Duration) ticker
+}
+
+type Metrics interface {
+	IncDeliveryStarted()
 }
 
 type ticker interface {
@@ -42,12 +52,14 @@ type realTicker struct{ *time.Ticker }
 
 func (t realTicker) C() <-chan time.Time { return t.Ticker.C }
 
-func NewPoller(store Store, temporalClient WorkflowStarter, logger *slog.Logger) *Poller {
+func NewPoller(store Store, temporalClient WorkflowStarter, logger *slog.Logger, retry config.DeliveryRetryConfig, metrics Metrics) *Poller {
 	return &Poller{
-		store:  store,
-		client: temporalClient,
-		logger: logger,
-		ticker: func(d time.Duration) ticker { return realTicker{Ticker: time.NewTicker(d)} },
+		store:   store,
+		client:  temporalClient,
+		logger:  logger,
+		retry:   retry,
+		metrics: metrics,
+		ticker:  func(d time.Duration) ticker { return realTicker{Ticker: time.NewTicker(d)} },
 	}
 }
 
@@ -86,17 +98,24 @@ func (p *Poller) pollOnce(ctx context.Context) error {
 			ID:        "delivery-job-" + job.ID.String(),
 			TaskQueue: TaskQueueName,
 			RetryPolicy: &temporal.RetryPolicy{
-				MaximumAttempts:    10,
-				InitialInterval:    2 * time.Second,
+				MaximumAttempts:    int32(p.retry.MaxAttempts),
+				InitialInterval:    p.retry.InitialInterval,
 				BackoffCoefficient: 2,
-				MaximumInterval:    5 * time.Minute,
+				MaximumInterval:    p.retry.MaxInterval,
 			},
-		}, WorkflowName, job.ID.String())
+		}, WorkflowName, job.ID.String(), p.retry.MaxAttempts)
 		if err != nil {
+			var startedErr *serviceerror.WorkflowExecutionAlreadyStarted
+			if errors.As(err, &startedErr) {
+				continue
+			}
 			if requeueErr := p.store.RequeueJob(ctx, job.ID, err.Error()); requeueErr != nil {
 				return fmt.Errorf("start workflow: %w; requeue job: %v", err, requeueErr)
 			}
 			return fmt.Errorf("start workflow: %w", err)
+		}
+		if p.metrics != nil {
+			p.metrics.IncDeliveryStarted()
 		}
 	}
 

@@ -9,6 +9,8 @@ import (
 
 	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
+
+	"groot/internal/config"
 )
 
 type stubStore struct {
@@ -44,9 +46,14 @@ func TestPollOnceStartsWorkflow(t *testing.T) {
 			if opts.TaskQueue != TaskQueueName {
 				t.Fatalf("task queue = %q", opts.TaskQueue)
 			}
+			if got, want := opts.RetryPolicy.MaximumAttempts, int32(3); got != want {
+				t.Fatalf("max attempts = %d, want %d", got, want)
+			}
 			return nil, nil
 		}},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
+		config.DeliveryRetryConfig{MaxAttempts: 3, InitialInterval: time.Second, MaxInterval: 5 * time.Second},
+		nil,
 	)
 	if err := p.pollOnce(context.Background()); err != nil {
 		t.Fatalf("pollOnce() error = %v", err)

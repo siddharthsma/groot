@@ -39,18 +39,25 @@ type Logger interface {
 	Error(string, ...any)
 }
 
+type Metrics interface {
+	IncEventsPublished()
+	IncEventsRecorded()
+}
+
 type Service struct {
 	publisher Publisher
 	store     EventStore
 	log       Logger
+	metrics   Metrics
 	now       func() time.Time
 }
 
-func NewService(publisher Publisher, store EventStore, logger Logger) *Service {
+func NewService(publisher Publisher, store EventStore, logger Logger, metrics Metrics) *Service {
 	return &Service{
 		publisher: publisher,
 		store:     store,
 		log:       logger,
+		metrics:   metrics,
 		now:       func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -80,10 +87,6 @@ func (s *Service) Ingest(ctx context.Context, req Request) (stream.Event, error)
 		Payload:   payload,
 	}
 
-	if err := s.store.SaveEvent(ctx, event); err != nil {
-		return stream.Event{}, fmt.Errorf("save event: %w", err)
-	}
-
 	if err := s.publisher.PublishEvent(ctx, event); err != nil {
 		if s.log != nil {
 			s.log.Error("event_publish_failed",
@@ -94,6 +97,16 @@ func (s *Service) Ingest(ctx context.Context, req Request) (stream.Event, error)
 			)
 		}
 		return stream.Event{}, fmt.Errorf("publish event: %w", err)
+	}
+	if s.metrics != nil {
+		s.metrics.IncEventsPublished()
+	}
+
+	if err := s.store.SaveEvent(ctx, event); err != nil {
+		return stream.Event{}, fmt.Errorf("save event: %w", err)
+	}
+	if s.metrics != nil {
+		s.metrics.IncEventsRecorded()
 	}
 
 	if s.log != nil {

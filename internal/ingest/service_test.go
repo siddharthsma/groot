@@ -33,6 +33,11 @@ type stubLogger struct{}
 func (stubLogger) Info(string, ...any)  {}
 func (stubLogger) Error(string, ...any) {}
 
+type stubMetrics struct{}
+
+func (stubMetrics) IncEventsPublished() {}
+func (stubMetrics) IncEventsRecorded()  {}
+
 func TestIngest(t *testing.T) {
 	now := time.Date(2026, 3, 5, 0, 0, 0, 0, time.UTC)
 	tenantID := uuid.New()
@@ -46,7 +51,7 @@ func TestIngest(t *testing.T) {
 			}
 			return nil
 		},
-	}, stubStore{saveFn: func(context.Context, stream.Event) error { return nil }}, stubLogger{})
+	}, stubStore{saveFn: func(context.Context, stream.Event) error { return nil }}, stubLogger{}, stubMetrics{})
 	svc.now = func() time.Time { return now }
 
 	event, err := svc.Ingest(context.Background(), Request{
@@ -64,7 +69,7 @@ func TestIngest(t *testing.T) {
 }
 
 func TestIngestValidation(t *testing.T) {
-	svc := NewService(stubPublisher{publishFn: func(context.Context, stream.Event) error { return nil }}, stubStore{saveFn: func(context.Context, stream.Event) error { return nil }}, stubLogger{})
+	svc := NewService(stubPublisher{publishFn: func(context.Context, stream.Event) error { return nil }}, stubStore{saveFn: func(context.Context, stream.Event) error { return nil }}, stubLogger{}, stubMetrics{})
 
 	_, err := svc.Ingest(context.Background(), Request{Source: "manual"})
 	if !errors.Is(err, ErrInvalidType) {

@@ -77,5 +77,11 @@ services:
       KAFKA_BROKERS: kafka:19092
       TEMPORAL_ADDRESS: temporal:7233
       TEMPORAL_NAMESPACE: default
+      GROOT_SYSTEM_API_KEY: system-secret
+      RESEND_API_KEY: re_test
+      RESEND_API_BASE_URL: https://api.resend.com
+      RESEND_WEBHOOK_PUBLIC_URL: https://example.com/webhooks/resend
+      RESEND_RECEIVING_DOMAIN: example.resend.app
+      RESEND_WEBHOOK_EVENTS: email.received
     ports:
       - "8081:8081"

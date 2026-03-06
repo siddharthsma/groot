@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,11 @@ const (
 	StatusDeadLetter = "dead_letter"
 )
 
+var (
+	ErrJobNotFound     = errors.New("delivery job not found")
+	ErrRetryNotAllowed = errors.New("delivery job retry not allowed")
+)
+
 type Job struct {
 	ID             uuid.UUID
 	TenantID       uuid.UUID
@@ -22,6 +28,8 @@ type Job struct {
 	Status         string
 	Attempts       int
 	LastError      *string
+	ExternalID     *string
+	LastStatusCode *int
 	CompletedAt    *time.Time
 	CreatedAt      time.Time
 }

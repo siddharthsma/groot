@@ -12,7 +12,11 @@ import (
 
 	"groot/internal/config"
 	"groot/internal/connectedapp"
+	"groot/internal/connectorinstance"
+	"groot/internal/connectors/resend"
 	"groot/internal/delivery"
+	"groot/internal/eventquery"
+	"groot/internal/functiondestination"
 	"groot/internal/httpapi"
 	"groot/internal/ingest"
 	"groot/internal/observability"
@@ -27,6 +31,7 @@ import (
 
 func main() {
 	logger := observability.NewLogger()
+	metrics := observability.NewMetrics()
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -74,7 +79,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer temporalSDKClient.Close()
-	temporalWorker := groottemporal.NewWorker(temporalSDKClient, activities.Dependencies{Store: db})
+	temporalWorker := groottemporal.NewWorker(temporalSDKClient, activities.Dependencies{
+		Store:           db,
+		SlackAPIBaseURL: cfg.SlackAPIBaseURL,
+		Metrics:         metrics,
+		Logger:          logger,
+	})
 	if err := groottemporal.StartWorker(temporalWorker); err != nil {
 		logger.Error("start temporal worker", slog.String("error", err.Error()))
 		os.Exit(1)
@@ -83,10 +93,15 @@ func main() {
 
 	tenantService := tenant.NewService(db)
 	appService := connectedapp.NewService(db)
-	subscriptionService := subscription.NewService(db, appService)
-	eventService := ingest.NewService(kafkaClient, db, logger)
-	routerConsumer := router.NewConsumer(cfg.KafkaBrokers, db, logger)
-	deliveryPoller := delivery.NewPoller(db, temporalSDKClient, logger)
+	connectorInstanceService := connectorinstance.NewService(db)
+	functionService := functiondestination.NewService(db)
+	subscriptionService := subscription.NewService(db, appService, functionService, connectorInstanceService)
+	eventService := ingest.NewService(kafkaClient, db, logger, metrics)
+	eventQueryService := eventquery.NewService(db)
+	deliveryService := delivery.NewService(db)
+	resendService := resend.NewService(cfg.Resend, db, eventService, logger, metrics, nil)
+	routerConsumer := router.NewConsumer(cfg.KafkaBrokers, db, logger, metrics)
+	deliveryPoller := delivery.NewPoller(db, temporalSDKClient, logger, cfg.DeliveryRetry, metrics)
 
 	handler := httpapi.NewHandler(httpapi.Options{
 		Logger: logger,
@@ -95,10 +110,25 @@ func main() {
 			{Name: "kafka", Checker: kafkaClient},
 			{Name: "temporal", Checker: temporalClient},
 		},
-		Tenants:  tenantService,
-		Apps:     appService,
-		Subs:     subscriptionService,
-		EventSvc: eventService,
+		RouterCheckers: []httpapi.NamedChecker{
+			{Name: "postgres", Checker: db},
+			{Name: "kafka", Checker: kafkaClient},
+		},
+		DeliveryCheckers: []httpapi.NamedChecker{
+			{Name: "postgres", Checker: db},
+			{Name: "temporal", Checker: temporalClient},
+		},
+		Tenants:            tenantService,
+		Apps:               appService,
+		Functions:          functionService,
+		Subs:               subscriptionService,
+		ConnectorInstances: connectorInstanceService,
+		EventSvc:           eventService,
+		EventQuerySvc:      eventQueryService,
+		Deliveries:         deliveryService,
+		Resend:             resendService,
+		SystemAPIKey:       cfg.SystemAPIKey,
+		Metrics:            metrics,
 	})
 
 	server := &http.Server{

@@ -22,22 +22,29 @@ type Store interface {
 }
 
 type Consumer struct {
-	reader *kafka.Reader
-	store  Store
-	logger *slog.Logger
-	now    func() time.Time
+	reader  *kafka.Reader
+	store   Store
+	logger  *slog.Logger
+	metrics Metrics
+	now     func() time.Time
 }
 
-func NewConsumer(brokers []string, store Store, logger *slog.Logger) *Consumer {
+type Metrics interface {
+	IncRouterEventsConsumed()
+	IncRouterMatches()
+}
+
+func NewConsumer(brokers []string, store Store, logger *slog.Logger, metrics Metrics) *Consumer {
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers: brokers,
 			Topic:   stream.EventsTopic,
 			GroupID: "groot-router",
 		}),
-		store:  store,
-		logger: logger,
-		now:    func() time.Time { return time.Now().UTC() },
+		store:   store,
+		logger:  logger,
+		metrics: metrics,
+		now:     func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -81,6 +88,9 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error 
 		slog.String("event_id", event.EventID.String()),
 		slog.String("tenant_id", event.TenantID.String()),
 	)
+	if c.metrics != nil {
+		c.metrics.IncRouterEventsConsumed()
+	}
 
 	matches, err := c.store.ListMatchingSubscriptions(ctx, event.TenantID, event.Type, event.Source)
 	if err != nil {
@@ -88,6 +98,9 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error 
 	}
 
 	for _, sub := range matches {
+		if c.metrics != nil {
+			c.metrics.IncRouterMatches()
+		}
 		c.logger.Info("subscription_matched",
 			slog.String("event_id", event.EventID.String()),
 			slog.String("tenant_id", event.TenantID.String()),
