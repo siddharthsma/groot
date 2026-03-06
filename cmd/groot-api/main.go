@@ -7,24 +7,36 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	adminauth "groot/internal/admin/auth"
+	"groot/internal/apikey"
+	"groot/internal/audit"
+	authn "groot/internal/auth"
 	"groot/internal/config"
 	"groot/internal/connectedapp"
 	"groot/internal/connectorinstance"
+	slackconnector "groot/internal/connectors/inbound/slack"
+	stripeconnector "groot/internal/connectors/inbound/stripe"
 	"groot/internal/connectors/resend"
 	"groot/internal/delivery"
 	"groot/internal/eventquery"
+	resultevents "groot/internal/events"
 	"groot/internal/functiondestination"
+	"groot/internal/graph"
 	"groot/internal/httpapi"
 	"groot/internal/inboundroute"
 	"groot/internal/ingest"
 	"groot/internal/observability"
+	"groot/internal/replay"
 	"groot/internal/router"
+	"groot/internal/schemas"
 	"groot/internal/storage"
 	"groot/internal/stream"
 	"groot/internal/subscription"
+	"groot/internal/subscriptionfilter"
 	groottemporal "groot/internal/temporal"
 	"groot/internal/temporal/activities"
 	"groot/internal/tenant"
@@ -80,11 +92,32 @@ func main() {
 		os.Exit(1)
 	}
 	defer temporalSDKClient.Close()
+	schemaService := schemas.NewService(db, schemas.Config{
+		ValidationMode:   schemas.NormalizeValidationMode(cfg.Schema.ValidationMode),
+		RegistrationMode: cfg.Schema.RegistrationMode,
+		MaxPayloadBytes:  cfg.Schema.MaxPayloadBytes,
+	}, logger, metrics)
+	if cfg.Schema.RegistrationMode == schemas.RegistrationModeStartup {
+		if err := schemaService.RegisterBundles(ctx, schemas.DefaultBundles()); err != nil {
+			if strings.Contains(err.Error(), `relation "event_schemas" does not exist`) {
+				logger.Info("schema registration skipped until migrations are applied", slog.String("error", err.Error()))
+			} else {
+				logger.Error("register event schemas", slog.String("error", err.Error()))
+				os.Exit(1)
+			}
+		}
+	}
+	resultEmitter := resultevents.NewEmitter(kafkaClient, db, logger, metrics, cfg.MaxChainDepth, resultevents.WithSchemaResolver(schemaService))
 	temporalWorker := groottemporal.NewWorker(temporalSDKClient, activities.Dependencies{
-		Store:           db,
-		SlackAPIBaseURL: cfg.SlackAPIBaseURL,
-		Metrics:         metrics,
-		Logger:          logger,
+		Store:            db,
+		Slack:            cfg.Slack,
+		Resend:           cfg.Resend,
+		NotionAPIBaseURL: cfg.Notion.APIBaseURL,
+		NotionAPIVersion: cfg.Notion.APIVersion,
+		LLM:              cfg.LLM,
+		ResultEmitter:    resultEmitter,
+		Metrics:          metrics,
+		Logger:           logger,
 	})
 	if err := groottemporal.StartWorker(temporalWorker); err != nil {
 		logger.Error("start temporal worker", slog.String("error", err.Error()))
@@ -93,17 +126,45 @@ func main() {
 	defer temporalWorker.Stop()
 
 	tenantService := tenant.NewService(db)
+	apiKeyService := apikey.NewService(db)
+	jwtVerifier, err := authn.NewJWTVerifier(ctx, cfg.Auth)
+	if err != nil {
+		logger.Error("initialize jwt verifier", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	authService := authn.NewService(cfg.Auth, tenantService, apiKeyService, jwtVerifier)
+	adminAuthService, err := adminauth.New(ctx, cfg.Admin)
+	if err != nil {
+		logger.Error("initialize admin auth", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	auditService := audit.NewService(db, cfg.Audit.Enabled)
 	appService := connectedapp.NewService(db)
-	connectorInstanceService := connectorinstance.NewService(db, cfg.AllowGlobalInstances)
+	connectorInstanceService := connectorinstance.NewService(db, cfg.AllowGlobalInstances, cfg.LLM.DefaultProvider)
 	inboundRouteService := inboundroute.NewService(db, metrics)
 	functionService := functiondestination.NewService(db)
-	subscriptionService := subscription.NewService(db, appService, functionService, connectorInstanceService, cfg.AllowGlobalInstances)
-	eventService := ingest.NewService(kafkaClient, db, logger, metrics)
+	filterService := subscriptionfilter.NewService(schemaService)
+	subscriptionService := subscription.NewService(db, appService, functionService, connectorInstanceService, cfg.AllowGlobalInstances, subscription.WithTemplateValidator(schemaService), subscription.WithFilterValidator(filterService), subscription.WithLogger(logger))
+	eventService := ingest.NewService(kafkaClient, db, logger, metrics, ingest.WithSchemaValidator(schemaService))
 	eventQueryService := eventquery.NewService(db)
-	deliveryService := delivery.NewService(db)
+	deliveryService := delivery.NewService(db, metrics)
+	graphService := graph.NewService(db, graph.Config{
+		MaxNodes:                    cfg.Graph.MaxNodes,
+		MaxEdges:                    cfg.Graph.MaxEdges,
+		ExecutionTraversalMaxEvents: cfg.Graph.ExecutionTraversalMaxEvents,
+		ExecutionMaxDepth:           cfg.Graph.ExecutionMaxDepth,
+		DefaultLimit:                cfg.Graph.DefaultLimit,
+	}, logger, metrics)
+	replayService := replay.NewService(db, cfg.Replay, metrics)
+	adminReplayService := replay.NewService(db, config.ReplayConfig{
+		MaxEvents:      cfg.Admin.ReplayMaxEvents,
+		MaxWindowHours: cfg.Replay.MaxWindowHours,
+	}, metrics)
 	resendService := resend.NewService(cfg.Resend, db, eventService, logger, metrics, nil)
+	slackService := slackconnector.NewService(cfg.Slack, db, eventService, logger, metrics)
+	stripeService := stripeconnector.NewService(cfg.Stripe, db, eventService, logger, metrics)
 	routerConsumer := router.NewConsumer(cfg.KafkaBrokers, db, logger, metrics)
-	deliveryPoller := delivery.NewPoller(db, temporalSDKClient, logger, cfg.DeliveryRetry, metrics)
+	deliveryPoller := delivery.NewPoller(db, temporalSDKClient, logger, cfg.DeliveryRetry, cfg.Agent, metrics)
 
 	handler := httpapi.NewHandler(httpapi.Options{
 		Logger: logger,
@@ -120,18 +181,33 @@ func main() {
 			{Name: "postgres", Checker: db},
 			{Name: "temporal", Checker: temporalClient},
 		},
-		Tenants:            tenantService,
-		Apps:               appService,
-		Functions:          functionService,
-		Subs:               subscriptionService,
-		ConnectorInstances: connectorInstanceService,
-		InboundRoutes:      inboundRouteService,
-		EventSvc:           eventService,
-		EventQuerySvc:      eventQueryService,
-		Deliveries:         deliveryService,
-		Resend:             resendService,
-		SystemAPIKey:       cfg.SystemAPIKey,
-		Metrics:            metrics,
+		Tenants:                tenantService,
+		Apps:                   appService,
+		Functions:              functionService,
+		Subs:                   subscriptionService,
+		ConnectorInstances:     connectorInstanceService,
+		InboundRoutes:          inboundRouteService,
+		EventSvc:               eventService,
+		EventQuerySvc:          eventQueryService,
+		Deliveries:             deliveryService,
+		Replay:                 replayService,
+		AdminReplay:            adminReplayService,
+		Schemas:                schemaService,
+		Resend:                 resendService,
+		Slack:                  slackService,
+		Stripe:                 stripeService,
+		Auth:                   authService,
+		AdminAuth:              adminAuthService,
+		AdminEnabled:           cfg.Admin.Enabled,
+		AdminAllowViewPayloads: cfg.Admin.AllowViewPayloads,
+		AdminReplayEnabled:     cfg.Admin.ReplayEnabled,
+		AdminRateLimitRPS:      cfg.Admin.RateLimitRPS,
+		AdminReplayMaxEvents:   cfg.Admin.ReplayMaxEvents,
+		APIKeys:                apiKeyService,
+		Graph:                  graphService,
+		Audit:                  auditService,
+		SystemAPIKey:           cfg.SystemAPIKey,
+		Metrics:                metrics,
 	})
 
 	server := &http.Server{

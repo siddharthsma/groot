@@ -13,6 +13,7 @@ import (
 	"groot/internal/delivery"
 	"groot/internal/stream"
 	"groot/internal/subscription"
+	"groot/internal/subscriptionfilter"
 	"groot/internal/tenant"
 )
 
@@ -32,6 +33,9 @@ type Consumer struct {
 type Metrics interface {
 	IncRouterEventsConsumed()
 	IncRouterMatches()
+	IncSubscriptionFilterEvaluations()
+	IncSubscriptionFilterMatches()
+	IncSubscriptionFilterRejections()
 }
 
 func NewConsumer(brokers []string, store Store, logger *slog.Logger, metrics Metrics) *Consumer {
@@ -98,6 +102,36 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error 
 	}
 
 	for _, sub := range matches {
+		if len(sub.Filter) > 0 {
+			if c.metrics != nil {
+				c.metrics.IncSubscriptionFilterEvaluations()
+			}
+			matched, err := subscriptionfilter.Evaluate(sub.Filter, event.Payload)
+			if err != nil {
+				if c.metrics != nil {
+					c.metrics.IncSubscriptionFilterRejections()
+				}
+				c.logger.Info("subscription_filter_invalid",
+					slog.String("subscription_id", sub.ID.String()),
+					slog.String("tenant_id", event.TenantID.String()),
+					slog.String("event_id", event.EventID.String()),
+					slog.String("error", err.Error()),
+				)
+				continue
+			}
+			c.logger.Info("subscription_filter_evaluated",
+				slog.String("subscription_id", sub.ID.String()),
+				slog.String("tenant_id", event.TenantID.String()),
+				slog.String("event_id", event.EventID.String()),
+				slog.Bool("matched", matched),
+			)
+			if !matched {
+				continue
+			}
+			if c.metrics != nil {
+				c.metrics.IncSubscriptionFilterMatches()
+			}
+		}
 		if c.metrics != nil {
 			c.metrics.IncRouterMatches()
 		}

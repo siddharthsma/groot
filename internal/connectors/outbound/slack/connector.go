@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	ConnectorName          = "slack"
-	OperationPostMessage   = "post_message"
-	defaultSlackAPIBaseURL = "https://slack.com/api"
+	ConnectorName              = "slack"
+	OperationPostMessage       = "post_message"
+	OperationCreateThreadReply = "create_thread_reply"
+	defaultSlackAPIBaseURL     = "https://slack.com/api"
 )
 
 type HTTPClient interface {
@@ -70,11 +71,12 @@ func (c *Connector) Name() string {
 }
 
 func (c *Connector) Execute(ctx context.Context, operation string, instanceConfig, params json.RawMessage, _ stream.Event) (outbound.Result, error) {
-	if strings.TrimSpace(operation) != OperationPostMessage {
+	op := strings.TrimSpace(operation)
+	if op != OperationPostMessage && op != OperationCreateThreadReply {
 		return outbound.Result{}, outbound.PermanentError{Err: outbound.ErrUnsupportedOperation}
 	}
 
-	cfg, reqBody, err := buildRequest(instanceConfig, params)
+	cfg, reqBody, err := buildRequest(op, instanceConfig, params)
 	if err != nil {
 		return outbound.Result{}, outbound.PermanentError{Err: err}
 	}
@@ -125,11 +127,14 @@ func (c *Connector) Execute(ctx context.Context, operation string, instanceConfi
 			return outbound.Result{}, outbound.PermanentError{Err: err, StatusCode: resp.StatusCode}
 		}
 	}
-
-	return outbound.Result{ExternalID: payload.TS, StatusCode: resp.StatusCode}, nil
+	output, err := json.Marshal(map[string]any{"channel": reqBody.Channel, "ts": payload.TS})
+	if err != nil {
+		return outbound.Result{}, outbound.PermanentError{Err: fmt.Errorf("marshal slack output: %w", err), StatusCode: resp.StatusCode}
+	}
+	return outbound.Result{ExternalID: payload.TS, StatusCode: resp.StatusCode, Channel: reqBody.Channel, Output: output}, nil
 }
 
-func buildRequest(instanceConfig, params json.RawMessage) (Config, postMessageRequest, error) {
+func buildRequest(operation string, instanceConfig, params json.RawMessage) (Config, postMessageRequest, error) {
 	var cfg connectorinstance.SlackConfig
 	if err := json.Unmarshal(instanceConfig, &cfg); err != nil {
 		return Config{}, postMessageRequest{}, fmt.Errorf("decode connector config: %w", err)
@@ -152,6 +157,9 @@ func buildRequest(instanceConfig, params json.RawMessage) (Config, postMessageRe
 	}
 	if channel == "" {
 		return Config{}, postMessageRequest{}, errors.New("channel is required")
+	}
+	if operation == OperationCreateThreadReply && strings.TrimSpace(reqParams.ThreadTS) == "" {
+		return Config{}, postMessageRequest{}, errors.New("thread_ts is required")
 	}
 	if strings.TrimSpace(reqParams.Text) == "" && len(reqParams.Blocks) == 0 {
 		return Config{}, postMessageRequest{}, errors.New("text is required unless blocks are provided")

@@ -13,6 +13,7 @@ type stubStore struct {
 	createFn    func(context.Context, TenantRecord) (Tenant, error)
 	listFn      func(context.Context) ([]Tenant, error)
 	getFn       func(context.Context, ID) (Tenant, error)
+	updateFn    func(context.Context, ID, string) (Tenant, error)
 	getByHashFn func(context.Context, string) (Tenant, error)
 }
 
@@ -26,6 +27,13 @@ func (s stubStore) ListTenants(ctx context.Context) ([]Tenant, error) {
 
 func (s stubStore) GetTenant(ctx context.Context, id ID) (Tenant, error) {
 	return s.getFn(ctx, id)
+}
+
+func (s stubStore) UpdateTenantName(ctx context.Context, id ID, name string) (Tenant, error) {
+	if s.updateFn == nil {
+		return Tenant{}, nil
+	}
+	return s.updateFn(ctx, id, name)
 }
 
 func (s stubStore) GetTenantByAPIKeyHash(ctx context.Context, hash string) (Tenant, error) {

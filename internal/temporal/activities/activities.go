@@ -12,16 +12,24 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"go.temporal.io/sdk/temporal"
 
+	"groot/internal/agent"
+	"groot/internal/config"
 	"groot/internal/connectedapp"
 	"groot/internal/connectorinstance"
 	"groot/internal/connectors/outbound"
+	llmconnector "groot/internal/connectors/outbound/llm"
+	notionconnector "groot/internal/connectors/outbound/notion"
+	resendconnector "groot/internal/connectors/outbound/resend"
 	slackconnector "groot/internal/connectors/outbound/slack"
 	"groot/internal/delivery"
+	resultevents "groot/internal/events"
 	"groot/internal/functiondestination"
 	"groot/internal/stream"
 	"groot/internal/subscription"
@@ -30,13 +38,24 @@ import (
 const DeliverHTTPName = "deliver_http"
 const InvokeFunctionName = "invoke_function"
 const ExecuteConnectorName = "execute_connector"
+const ExecuteAgentToolName = "execute_agent_tool"
+
+const (
+	deliveryRetryableErrorType = "delivery_retryable"
+	deliveryPermanentErrorType = "delivery_permanent"
+)
 
 type Dependencies struct {
-	Store           Store
-	HTTPClient      *http.Client
-	SlackAPIBaseURL string
-	Metrics         Metrics
-	Logger          *slog.Logger
+	Store            Store
+	HTTPClient       *http.Client
+	Slack            config.SlackConfig
+	Resend           config.ResendConfig
+	NotionAPIBaseURL string
+	NotionAPIVersion string
+	LLM              config.LLMConfig
+	ResultEmitter    *resultevents.Emitter
+	Metrics          Metrics
+	Logger           *slog.Logger
 }
 
 type Store interface {
@@ -45,20 +64,27 @@ type Store interface {
 	GetConnectedApp(context.Context, uuid.UUID, uuid.UUID) (connectedapp.App, error)
 	GetFunctionDestination(context.Context, uuid.UUID, uuid.UUID) (functiondestination.Destination, error)
 	GetConnectorInstance(context.Context, uuid.UUID, uuid.UUID) (connectorinstance.Instance, error)
+	GetTenantConnectorInstanceByName(context.Context, uuid.UUID, string) (connectorinstance.Instance, error)
+	GetGlobalConnectorInstanceByName(context.Context, string) (connectorinstance.Instance, error)
 	GetEvent(context.Context, uuid.UUID) (stream.Event, error)
 	SetDeliveryJobAttempt(context.Context, uuid.UUID, int) error
 	MarkDeliveryJobSucceeded(context.Context, uuid.UUID, time.Time, *string, *int) error
 	MarkDeliveryJobRetryableFailure(context.Context, uuid.UUID, string, *int) error
 	MarkDeliveryJobDeadLetter(context.Context, uuid.UUID, string, *int) error
 	MarkDeliveryJobFailed(context.Context, uuid.UUID, string, *int) error
+	CreateAgentRun(context.Context, agent.RunRecord) (agent.Run, error)
+	CreateAgentStep(context.Context, agent.StepRecord) error
+	MarkAgentRunSucceeded(context.Context, uuid.UUID, int, time.Time) error
+	MarkAgentRunFailed(context.Context, uuid.UUID, int, time.Time, string) error
 }
 
 type Activities struct {
-	store      Store
-	httpClient *http.Client
-	connectors map[string]outbound.Connector
-	metrics    Metrics
-	logger     *slog.Logger
+	store         Store
+	httpClient    *http.Client
+	connectors    map[string]outbound.Connector
+	resultEmitter *resultevents.Emitter
+	metrics       Metrics
+	logger        *slog.Logger
 }
 
 type Metrics interface {
@@ -71,6 +97,20 @@ type Metrics interface {
 	IncConnectorDeliveryFailures(string, string)
 	IncConnectorDeliveryDeadLetter(string, string)
 	IncGlobalConnectorDeliveries(string, string)
+	IncNotionActions()
+	IncNotionActionFailures()
+	IncResendEmailsSent()
+	IncSlackThreadReplies()
+	IncLLMClassifications()
+	IncLLMExtractions()
+	IncLLMRequests(string, string)
+	IncLLMFailures(string)
+	ObserveLLMLatency(string, string, float64)
+	IncResultEventsEmitted(string, string, string)
+	IncResultEventEmitFailures()
+	IncAgentRuns()
+	IncAgentSteps()
+	IncAgentToolCalls()
 }
 
 type DeliveryJob struct {
@@ -78,6 +118,7 @@ type DeliveryJob struct {
 	TenantID       string
 	SubscriptionID string
 	EventID        string
+	ResultEventID  string
 }
 
 type Subscription struct {
@@ -88,6 +129,8 @@ type Subscription struct {
 	ConnectorInstanceID   string
 	Operation             string
 	OperationParams       json.RawMessage
+	EmitSuccessEvent      bool
+	EmitFailureEvent      bool
 }
 
 type ConnectedApp struct {
@@ -112,15 +155,51 @@ type ConnectorInstance struct {
 type ConnectorResult struct {
 	ExternalID string
 	StatusCode int
+	Channel    string
+	Text       string
+	Output     json.RawMessage
+	Provider   string
+	Model      string
+	Usage      outbound.Usage
+}
+
+type FunctionResult struct {
+	StatusCode      int
+	ResponseBodySHA string
 }
 
 type Event struct {
-	EventID   string          `json:"event_id"`
-	TenantID  string          `json:"tenant_id"`
-	Type      string          `json:"type"`
-	Source    string          `json:"source"`
-	Timestamp time.Time       `json:"timestamp"`
-	Payload   json.RawMessage `json:"payload"`
+	EventID    string          `json:"event_id"`
+	TenantID   string          `json:"tenant_id"`
+	Type       string          `json:"type"`
+	Source     string          `json:"source"`
+	SourceKind string          `json:"source_kind"`
+	ChainDepth int             `json:"chain_depth"`
+	Timestamp  time.Time       `json:"timestamp"`
+	Payload    json.RawMessage `json:"payload"`
+}
+
+type ResultEventRequest struct {
+	DeliveryJobID         string
+	TenantID              string
+	SubscriptionID        string
+	InputEventID          string
+	ExistingResultEventID string
+	InputEvent            Event
+	ConnectorName         string
+	Operation             string
+	Status                string
+	ExternalID            *string
+	HTTPStatusCode        *int
+	Output                json.RawMessage
+	ErrorMessage          string
+	ErrorType             string
+}
+
+type activityFailureDetails struct {
+	StatusCode int
+	Provider   string
+	Model      string
 }
 
 func New(deps Dependencies) *Activities {
@@ -129,14 +208,18 @@ func New(deps Dependencies) *Activities {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
 	connectors := map[string]outbound.Connector{
-		slackconnector.ConnectorName: slackconnector.New(deps.SlackAPIBaseURL, client),
+		slackconnector.ConnectorName:  slackconnector.New(deps.Slack.APIBaseURL, client),
+		notionconnector.ConnectorName: notionconnector.New(deps.NotionAPIBaseURL, deps.NotionAPIVersion, client),
+		resendconnector.ConnectorName: resendconnector.New(deps.Resend, client),
+		llmconnector.ConnectorName:    llmconnector.New(deps.LLM, client),
 	}
 	return &Activities{
-		store:      deps.Store,
-		httpClient: client,
-		connectors: connectors,
-		metrics:    deps.Metrics,
-		logger:     deps.Logger,
+		store:         deps.Store,
+		httpClient:    client,
+		connectors:    connectors,
+		resultEmitter: deps.ResultEmitter,
+		metrics:       deps.Metrics,
+		logger:        deps.Logger,
 	}
 }
 
@@ -154,6 +237,7 @@ func (a *Activities) LoadDeliveryJob(ctx context.Context, deliveryJobID string) 
 		TenantID:       job.TenantID.String(),
 		SubscriptionID: job.SubscriptionID.String(),
 		EventID:        job.EventID.String(),
+		ResultEventID:  optionalUUIDString(job.ResultEventID),
 	}, nil
 }
 
@@ -174,6 +258,8 @@ func (a *Activities) LoadSubscription(ctx context.Context, subscriptionID string
 		ConnectorInstanceID:   optionalUUIDString(sub.ConnectorInstanceID),
 		Operation:             optionalString(sub.Operation),
 		OperationParams:       sub.OperationParams,
+		EmitSuccessEvent:      sub.EmitSuccessEvent,
+		EmitFailureEvent:      sub.EmitFailureEvent,
 	}, nil
 }
 
@@ -245,12 +331,14 @@ func (a *Activities) LoadEvent(ctx context.Context, eventID string) (Event, erro
 		return Event{}, err
 	}
 	return Event{
-		EventID:   event.EventID.String(),
-		TenantID:  event.TenantID.String(),
-		Type:      event.Type,
-		Source:    event.Source,
-		Timestamp: event.Timestamp,
-		Payload:   event.Payload,
+		EventID:    event.EventID.String(),
+		TenantID:   event.TenantID.String(),
+		Type:       event.Type,
+		Source:     event.Source,
+		SourceKind: event.SourceKind,
+		ChainDepth: event.ChainDepth,
+		Timestamp:  event.Timestamp,
+		Payload:    event.Payload,
 	}, nil
 }
 
@@ -287,7 +375,7 @@ func (a *Activities) DeliverHTTP(ctx context.Context, destinationURL string, eve
 	return nil
 }
 
-func (a *Activities) InvokeFunction(ctx context.Context, deliveryJobID string, functionDestinationID string, event Event, destinationURL string, secret string, timeoutSeconds int, attempt int) error {
+func (a *Activities) InvokeFunction(ctx context.Context, deliveryJobID string, functionDestinationID string, event Event, destinationURL string, secret string, timeoutSeconds int, attempt int) (FunctionResult, error) {
 	if a.logger != nil {
 		a.logger.Info("function_invocation_started",
 			slog.String("delivery_job_id", deliveryJobID),
@@ -306,7 +394,7 @@ func (a *Activities) InvokeFunction(ctx context.Context, deliveryJobID string, f
 		if a.metrics != nil {
 			a.metrics.IncFunctionInvocationFailures()
 		}
-		return fmt.Errorf("marshal event: %w", err)
+		return FunctionResult{}, wrapActivityError(fmt.Errorf("marshal event: %w", err))
 	}
 
 	invokeCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSeconds)*time.Second)
@@ -317,7 +405,7 @@ func (a *Activities) InvokeFunction(ctx context.Context, deliveryJobID string, f
 		if a.metrics != nil {
 			a.metrics.IncFunctionInvocationFailures()
 		}
-		return fmt.Errorf("build request: %w", err)
+		return FunctionResult{}, wrapActivityError(fmt.Errorf("build request: %w", err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Groot-Event-Id", event.EventID)
@@ -338,10 +426,16 @@ func (a *Activities) InvokeFunction(ctx context.Context, deliveryJobID string, f
 		if a.metrics != nil {
 			a.metrics.IncFunctionInvocationFailures()
 		}
-		return fmt.Errorf("perform request: %w", err)
+		return FunctionResult{}, wrapActivityError(outbound.RetryableError{Err: fmt.Errorf("perform request: %w", err)})
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	responseBody, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		if a.metrics != nil {
+			a.metrics.IncFunctionInvocationFailures()
+		}
+		return FunctionResult{}, wrapActivityError(outbound.RetryableError{Err: fmt.Errorf("read response: %w", readErr), StatusCode: resp.StatusCode})
+	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if a.logger != nil {
@@ -356,7 +450,11 @@ func (a *Activities) InvokeFunction(ctx context.Context, deliveryJobID string, f
 		if a.metrics != nil {
 			a.metrics.IncFunctionInvocationFailures()
 		}
-		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		err := fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		if resp.StatusCode >= http.StatusInternalServerError {
+			return FunctionResult{}, wrapActivityError(outbound.RetryableError{Err: err, StatusCode: resp.StatusCode})
+		}
+		return FunctionResult{}, wrapActivityError(outbound.PermanentError{Err: err, StatusCode: resp.StatusCode})
 	}
 
 	if a.logger != nil {
@@ -368,13 +466,16 @@ func (a *Activities) InvokeFunction(ctx context.Context, deliveryJobID string, f
 			slog.Int("attempt", attempt),
 		)
 	}
-	return nil
+	return FunctionResult{
+		StatusCode:      resp.StatusCode,
+		ResponseBodySHA: sha256Hex(responseBody),
+	}, nil
 }
 
 func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string, tenantID string, event Event, connectorInstance ConnectorInstance, operation string, operationParams json.RawMessage, attempt int) (ConnectorResult, error) {
 	connector, ok := a.connectors[connectorInstance.ConnectorName]
 	if !ok {
-		return ConnectorResult{}, outbound.PermanentError{Err: fmt.Errorf("unsupported connector: %s", connectorInstance.ConnectorName)}
+		return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: fmt.Errorf("unsupported connector: %s", connectorInstance.ConnectorName)})
 	}
 	if a.logger != nil {
 		a.logger.Info("connector_delivery_started",
@@ -386,6 +487,37 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 			slog.Int("attempt", attempt),
 		)
 	}
+	if connectorInstance.ConnectorName == notionconnector.ConnectorName {
+		if a.logger != nil {
+			a.logger.Info("notion_action_started",
+				slog.String("tenant_id", tenantID),
+				slog.String("connector_name", connectorInstance.ConnectorName),
+				slog.String("operation", operation),
+				slog.String("delivery_job_id", deliveryJobID),
+				slog.String("event_id", event.EventID),
+			)
+		}
+		if a.metrics != nil {
+			a.metrics.IncNotionActions()
+		}
+	}
+	if connectorInstance.ConnectorName == llmconnector.ConnectorName {
+		if a.logger != nil {
+			a.logger.Info("llm_action_started",
+				slog.String("tenant_id", tenantID),
+				slog.String("operation", operation),
+				slog.String("delivery_job_id", deliveryJobID),
+				slog.String("event_id", event.EventID),
+			)
+		}
+	}
+	if connectorInstance.ConnectorName == resendconnector.ConnectorName && operation == resendconnector.OperationSendEmail && a.logger != nil {
+		a.logger.Info("resend_send_email_started",
+			slog.String("tenant_id", tenantID),
+			slog.String("delivery_job_id", deliveryJobID),
+			slog.String("event_id", event.EventID),
+		)
+	}
 	if a.metrics != nil {
 		a.metrics.IncConnectorDeliveries(connectorInstance.ConnectorName, operation)
 		if connectorInstance.Scope == connectorinstance.ScopeGlobal {
@@ -395,24 +527,35 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 
 	eventID, err := uuid.Parse(event.EventID)
 	if err != nil {
-		return ConnectorResult{}, outbound.PermanentError{Err: err}
+		return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: err})
 	}
 	parsedTenantID, err := uuid.Parse(event.TenantID)
 	if err != nil {
-		return ConnectorResult{}, outbound.PermanentError{Err: err}
+		return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: err})
 	}
 
+	startedAt := time.Now()
 	result, err := connector.Execute(ctx, operation, connectorInstance.Config, renderOperationParams(operationParams, event), stream.Event{
-		EventID:   eventID,
-		TenantID:  parsedTenantID,
-		Type:      event.Type,
-		Source:    event.Source,
-		Timestamp: event.Timestamp,
-		Payload:   event.Payload,
+		EventID:    eventID,
+		TenantID:   parsedTenantID,
+		Type:       event.Type,
+		Source:     event.Source,
+		SourceKind: event.SourceKind,
+		ChainDepth: event.ChainDepth,
+		Timestamp:  event.Timestamp,
+		Payload:    event.Payload,
 	})
 	if err != nil {
 		if a.metrics != nil {
 			a.metrics.IncConnectorDeliveryFailures(connectorInstance.ConnectorName, operation)
+			if connectorInstance.ConnectorName == notionconnector.ConnectorName {
+				a.metrics.IncNotionActionFailures()
+			}
+			if connectorInstance.ConnectorName == llmconnector.ConnectorName {
+				a.metrics.IncLLMRequests(connectorErrorProvider(err), operation)
+				a.metrics.IncLLMFailures(connectorErrorProvider(err))
+				a.metrics.ObserveLLMLatency(connectorErrorProvider(err), operation, time.Since(startedAt).Seconds())
+			}
 		}
 		if a.logger != nil {
 			a.logger.Info("connector_delivery_failed",
@@ -423,8 +566,27 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 				slog.String("event_id", event.EventID),
 				slog.Int("attempt", attempt),
 			)
+			if connectorInstance.ConnectorName == notionconnector.ConnectorName {
+				a.logger.Info("notion_action_failed",
+					slog.String("tenant_id", tenantID),
+					slog.String("connector_name", connectorInstance.ConnectorName),
+					slog.String("operation", operation),
+					slog.String("delivery_job_id", deliveryJobID),
+					slog.String("event_id", event.EventID),
+				)
+			}
+			if connectorInstance.ConnectorName == llmconnector.ConnectorName {
+				a.logger.Info("llm_action_failed",
+					slog.String("tenant_id", tenantID),
+					slog.String("operation", operation),
+					slog.String("provider", connectorErrorProvider(err)),
+					slog.String("model", connectorErrorModel(err)),
+					slog.String("delivery_job_id", deliveryJobID),
+					slog.String("event_id", event.EventID),
+				)
+			}
 		}
-		return ConnectorResult{}, err
+		return ConnectorResult{}, wrapActivityError(err)
 	}
 
 	if a.logger != nil {
@@ -436,8 +598,168 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 			slog.String("event_id", event.EventID),
 			slog.Int("attempt", attempt),
 		)
+		if connectorInstance.ConnectorName == notionconnector.ConnectorName {
+			a.logger.Info("notion_action_succeeded",
+				slog.String("tenant_id", tenantID),
+				slog.String("connector_name", connectorInstance.ConnectorName),
+				slog.String("operation", operation),
+				slog.String("delivery_job_id", deliveryJobID),
+				slog.String("event_id", event.EventID),
+			)
+		}
+		if connectorInstance.ConnectorName == llmconnector.ConnectorName {
+			a.logger.Info("llm_action_succeeded",
+				slog.String("tenant_id", tenantID),
+				slog.String("operation", operation),
+				slog.String("provider", result.Provider),
+				slog.String("model", result.Model),
+				slog.String("delivery_job_id", deliveryJobID),
+				slog.String("event_id", event.EventID),
+				slog.Int("prompt_tokens", result.Usage.PromptTokens),
+				slog.Int("completion_tokens", result.Usage.CompletionTokens),
+				slog.Int("total_tokens", result.Usage.TotalTokens),
+			)
+		}
+		if connectorInstance.ConnectorName == resendconnector.ConnectorName && operation == resendconnector.OperationSendEmail {
+			a.logger.Info("resend_send_email_completed",
+				slog.String("tenant_id", tenantID),
+				slog.String("delivery_job_id", deliveryJobID),
+				slog.String("event_id", event.EventID),
+			)
+		}
+		if connectorInstance.ConnectorName == slackconnector.ConnectorName && operation == slackconnector.OperationCreateThreadReply {
+			a.logger.Info("slack_thread_reply_created",
+				slog.String("tenant_id", tenantID),
+				slog.String("delivery_job_id", deliveryJobID),
+				slog.String("event_id", event.EventID),
+			)
+		}
+		if connectorInstance.ConnectorName == llmconnector.ConnectorName && operation == llmconnector.OperationClassify {
+			a.logger.Info("llm_classify_completed",
+				slog.String("tenant_id", tenantID),
+				slog.String("delivery_job_id", deliveryJobID),
+				slog.String("event_id", event.EventID),
+			)
+		}
+		if connectorInstance.ConnectorName == llmconnector.ConnectorName && operation == llmconnector.OperationExtract {
+			a.logger.Info("llm_extract_completed",
+				slog.String("tenant_id", tenantID),
+				slog.String("delivery_job_id", deliveryJobID),
+				slog.String("event_id", event.EventID),
+			)
+		}
 	}
-	return ConnectorResult{ExternalID: result.ExternalID, StatusCode: result.StatusCode}, nil
+	if connectorInstance.ConnectorName == llmconnector.ConnectorName && a.metrics != nil {
+		a.metrics.IncLLMRequests(result.Provider, operation)
+		a.metrics.ObserveLLMLatency(result.Provider, operation, time.Since(startedAt).Seconds())
+	}
+	if a.metrics != nil {
+		if connectorInstance.ConnectorName == resendconnector.ConnectorName && operation == resendconnector.OperationSendEmail {
+			a.metrics.IncResendEmailsSent()
+		}
+		if connectorInstance.ConnectorName == slackconnector.ConnectorName && operation == slackconnector.OperationCreateThreadReply {
+			a.metrics.IncSlackThreadReplies()
+		}
+		if connectorInstance.ConnectorName == llmconnector.ConnectorName && operation == llmconnector.OperationClassify {
+			a.metrics.IncLLMClassifications()
+		}
+		if connectorInstance.ConnectorName == llmconnector.ConnectorName && operation == llmconnector.OperationExtract {
+			a.metrics.IncLLMExtractions()
+		}
+	}
+	return ConnectorResult{
+		ExternalID: result.ExternalID,
+		StatusCode: result.StatusCode,
+		Channel:    result.Channel,
+		Text:       result.Text,
+		Output:     result.Output,
+		Provider:   result.Provider,
+		Model:      result.Model,
+		Usage:      result.Usage,
+	}, nil
+}
+
+func (a *Activities) EmitResultEvent(ctx context.Context, req ResultEventRequest) error {
+	if a.resultEmitter == nil {
+		return nil
+	}
+	deliveryJobID, err := uuid.Parse(req.DeliveryJobID)
+	if err != nil {
+		a.logResultEmitterFailure(fmt.Errorf("parse delivery job id: %w", err))
+		return nil
+	}
+	tenantID, err := uuid.Parse(req.TenantID)
+	if err != nil {
+		a.logResultEmitterFailure(fmt.Errorf("parse tenant id: %w", err))
+		return nil
+	}
+	subscriptionID, err := uuid.Parse(req.SubscriptionID)
+	if err != nil {
+		a.logResultEmitterFailure(fmt.Errorf("parse subscription id: %w", err))
+		return nil
+	}
+	inputEventID, err := uuid.Parse(req.InputEventID)
+	if err != nil {
+		a.logResultEmitterFailure(fmt.Errorf("parse input event id: %w", err))
+		return nil
+	}
+	var output map[string]any
+	if len(req.Output) > 0 {
+		if err := json.Unmarshal(req.Output, &output); err != nil {
+			a.logResultEmitterFailure(fmt.Errorf("decode result output: %w", err))
+			return nil
+		}
+	}
+	eventID, err := uuid.Parse(req.InputEvent.EventID)
+	if err != nil {
+		a.logResultEmitterFailure(fmt.Errorf("parse event id: %w", err))
+		return nil
+	}
+	var resultEventID *uuid.UUID
+	if strings.TrimSpace(req.ExistingResultEventID) != "" {
+		parsed, err := uuid.Parse(req.ExistingResultEventID)
+		if err != nil {
+			a.logResultEmitterFailure(fmt.Errorf("parse existing result event id: %w", err))
+			return nil
+		}
+		resultEventID = &parsed
+	}
+
+	emitReq := resultevents.EmitRequest{
+		Subscription: subscription.Subscription{
+			ID: subscriptionID,
+		},
+		DeliveryJob: delivery.Job{
+			ID:             deliveryJobID,
+			TenantID:       tenantID,
+			SubscriptionID: subscriptionID,
+			EventID:        inputEventID,
+			ResultEventID:  resultEventID,
+		},
+		InputEvent: stream.Event{
+			EventID:    eventID,
+			TenantID:   tenantID,
+			Type:       req.InputEvent.Type,
+			Source:     req.InputEvent.Source,
+			SourceKind: req.InputEvent.SourceKind,
+			ChainDepth: req.InputEvent.ChainDepth,
+			Timestamp:  req.InputEvent.Timestamp,
+			Payload:    req.InputEvent.Payload,
+		},
+		Connector:  req.ConnectorName,
+		Operation:  req.Operation,
+		Status:     req.Status,
+		Output:     output,
+		ExternalID: req.ExternalID,
+		HTTPStatus: req.HTTPStatusCode,
+	}
+	if strings.TrimSpace(req.ErrorMessage) != "" {
+		emitReq.Error = &resultevents.ResultError{Message: req.ErrorMessage, Type: strings.TrimSpace(req.ErrorType)}
+	}
+	if err := a.resultEmitter.EmitResultEvent(ctx, emitReq); err != nil {
+		a.logResultEmitterFailure(err)
+	}
+	return nil
 }
 
 func (a *Activities) MarkSucceeded(ctx context.Context, deliveryJobID string, externalID *string, lastStatusCode *int) error {
@@ -515,6 +837,20 @@ func computeSignature(secret string, body []byte) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+func sha256Hex(body []byte) string {
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+func (a *Activities) logResultEmitterFailure(err error) {
+	if a.metrics != nil {
+		a.metrics.IncResultEventEmitFailures()
+	}
+	if a.logger != nil {
+		a.logger.Error("result_event_emit_failed", slog.String("error", err.Error()))
+	}
+}
+
 func optionalUUIDString(id *uuid.UUID) string {
 	if id == nil {
 		return ""
@@ -533,6 +869,19 @@ func renderOperationParams(raw json.RawMessage, event Event) json.RawMessage {
 	if len(raw) == 0 {
 		return json.RawMessage(`{}`)
 	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return raw
+	}
+	rendered := renderTemplateValue(value, buildTemplateReplacements(event))
+	normalized, err := json.Marshal(rendered)
+	if err != nil {
+		return raw
+	}
+	return json.RawMessage(normalized)
+}
+
+func buildTemplateReplacements(event Event) map[string]string {
 	replacements := map[string]string{
 		"{{event_id}}":  event.EventID,
 		"{{tenant_id}}": event.TenantID,
@@ -540,14 +889,65 @@ func renderOperationParams(raw json.RawMessage, event Event) json.RawMessage {
 		"{{source}}":    event.Source,
 		"{{timestamp}}": event.Timestamp.UTC().Format(time.RFC3339),
 	}
-	rendered := string(raw)
-	for token, value := range replacements {
-		rendered = strings.ReplaceAll(rendered, token, value)
+	var payload any
+	if err := json.Unmarshal(event.Payload, &payload); err == nil {
+		collectPayloadReplacements(replacements, "payload", payload)
 	}
-	return json.RawMessage(rendered)
+	return replacements
+}
+
+func renderTemplateValue(value any, replacements map[string]string) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		rendered := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			rendered[key] = renderTemplateValue(nested, replacements)
+		}
+		return rendered
+	case []any:
+		rendered := make([]any, len(typed))
+		for i, nested := range typed {
+			rendered[i] = renderTemplateValue(nested, replacements)
+		}
+		return rendered
+	case string:
+		rendered := typed
+		for token, replacement := range replacements {
+			rendered = strings.ReplaceAll(rendered, token, replacement)
+		}
+		return rendered
+	default:
+		return value
+	}
+}
+
+func collectPayloadReplacements(replacements map[string]string, prefix string, value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, nested := range typed {
+			collectPayloadReplacements(replacements, prefix+"."+key, nested)
+		}
+	case []any:
+		for i, nested := range typed {
+			collectPayloadReplacements(replacements, prefix+"."+strconv.Itoa(i), nested)
+		}
+	case string:
+		replacements["{{"+prefix+"}}"] = typed
+	case bool:
+		replacements["{{"+prefix+"}}"] = strconv.FormatBool(typed)
+	case float64:
+		replacements["{{"+prefix+"}}"] = strconv.FormatFloat(typed, 'f', -1, 64)
+	}
 }
 
 func ConnectorStatusCode(err error) *int {
+	if details, ok := activityFailure(err); ok {
+		if details.StatusCode == 0 {
+			return nil
+		}
+		statusCode := details.StatusCode
+		return &statusCode
+	}
 	var retryable outbound.RetryableError
 	if errors.As(err, &retryable) {
 		if retryable.StatusCode == 0 {
@@ -565,4 +965,74 @@ func ConnectorStatusCode(err error) *int {
 		return &statusCode
 	}
 	return nil
+}
+
+func IsPermanentError(err error) bool {
+	var applicationErr *temporal.ApplicationError
+	if errors.As(err, &applicationErr) {
+		return applicationErr.NonRetryable() || applicationErr.Type() == deliveryPermanentErrorType
+	}
+	var permanent outbound.PermanentError
+	return errors.As(err, &permanent)
+}
+
+func connectorErrorProvider(err error) string {
+	if details, ok := activityFailure(err); ok {
+		return details.Provider
+	}
+	var retryable outbound.RetryableError
+	if errors.As(err, &retryable) {
+		return retryable.Provider
+	}
+	var permanent outbound.PermanentError
+	if errors.As(err, &permanent) {
+		return permanent.Provider
+	}
+	return ""
+}
+
+func connectorErrorModel(err error) string {
+	if details, ok := activityFailure(err); ok {
+		return details.Model
+	}
+	var retryable outbound.RetryableError
+	if errors.As(err, &retryable) {
+		return retryable.Model
+	}
+	var permanent outbound.PermanentError
+	if errors.As(err, &permanent) {
+		return permanent.Model
+	}
+	return ""
+}
+
+func activityFailure(err error) (activityFailureDetails, bool) {
+	var applicationErr *temporal.ApplicationError
+	if errors.As(err, &applicationErr) {
+		var details activityFailureDetails
+		if applicationErr.Details(&details) == nil {
+			return details, true
+		}
+	}
+	return activityFailureDetails{}, false
+}
+
+func wrapActivityError(err error) error {
+	var retryable outbound.RetryableError
+	if errors.As(err, &retryable) {
+		return temporal.NewApplicationErrorWithCause(err.Error(), deliveryRetryableErrorType, err, activityFailureDetails{
+			StatusCode: retryable.StatusCode,
+			Provider:   retryable.Provider,
+			Model:      retryable.Model,
+		})
+	}
+	var permanent outbound.PermanentError
+	if errors.As(err, &permanent) {
+		return temporal.NewNonRetryableApplicationError(err.Error(), deliveryPermanentErrorType, err, activityFailureDetails{
+			StatusCode: permanent.StatusCode,
+			Provider:   permanent.Provider,
+			Model:      permanent.Model,
+		})
+	}
+	return temporal.NewNonRetryableApplicationError(err.Error(), deliveryPermanentErrorType, err)
 }

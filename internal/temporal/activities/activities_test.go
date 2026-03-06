@@ -27,7 +27,7 @@ func TestDeliverHTTP(t *testing.T) {
 	err := a.DeliverHTTP(context.Background(), server.URL, Event{
 		EventID:  "1",
 		TenantID: "2",
-		Type:     "example.event",
+		Type:     "example.event.v1",
 		Source:   "manual",
 		Payload:  json.RawMessage(`{"ok":true}`),
 	})
@@ -61,14 +61,33 @@ func TestInvokeFunction(t *testing.T) {
 	defer server.Close()
 
 	a := New(Dependencies{})
-	err := a.InvokeFunction(context.Background(), "job-1", "fn-1", Event{
+	result, err := a.InvokeFunction(context.Background(), "job-1", "fn-1", Event{
 		EventID:  "1",
 		TenantID: "2",
-		Type:     "example.event",
+		Type:     "example.event.v1",
 		Source:   "manual",
 		Payload:  json.RawMessage(`{"ok":true}`),
 	}, server.URL, secret, 5, 1)
 	if err != nil {
 		t.Fatalf("InvokeFunction() error = %v", err)
+	}
+	if result.StatusCode != http.StatusOK {
+		t.Fatalf("InvokeFunction() status = %d", result.StatusCode)
+	}
+	if result.ResponseBodySHA == "" {
+		t.Fatal("InvokeFunction() missing response body hash")
+	}
+}
+
+func TestRenderOperationParamsPayloadPath(t *testing.T) {
+	rendered := renderOperationParams(json.RawMessage(`{"prompt":"Summarize {{payload.text}} from {{payload.count}} / {{payload.ok}}"}`), Event{
+		EventID:  "evt_1",
+		TenantID: "tenant_1",
+		Type:     "example.event.v1",
+		Source:   "manual",
+		Payload:  json.RawMessage(`{"text":"hello","count":3,"ok":true}`),
+	})
+	if got, want := string(rendered), `{"prompt":"Summarize hello from 3 / true"}`; got != want {
+		t.Fatalf("renderOperationParams() = %s, want %s", got, want)
 	}
 }

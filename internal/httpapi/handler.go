@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -13,18 +14,27 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/time/rate"
 
+	"groot/internal/apikey"
+	iauth "groot/internal/auth"
 	"groot/internal/connectedapp"
 	"groot/internal/connectorinstance"
+	slackconnector "groot/internal/connectors/inbound/slack"
+	stripeconnector "groot/internal/connectors/inbound/stripe"
 	"groot/internal/connectors/resend"
 	"groot/internal/delivery"
 	"groot/internal/eventquery"
 	"groot/internal/functiondestination"
+	"groot/internal/graph"
 	"groot/internal/inboundroute"
 	"groot/internal/ingest"
 	"groot/internal/observability"
+	"groot/internal/replay"
+	"groot/internal/schemas"
 	"groot/internal/stream"
 	"groot/internal/subscription"
+	"groot/internal/subscriptionfilter"
 	"groot/internal/tenant"
 )
 
@@ -41,6 +51,7 @@ type TenantService interface {
 	CreateTenant(context.Context, string) (tenant.CreatedTenant, error)
 	ListTenants(context.Context) ([]tenant.Tenant, error)
 	GetTenant(context.Context, uuid.UUID) (tenant.Tenant, error)
+	UpdateTenantName(context.Context, uuid.UUID, string) (tenant.Tenant, error)
 	Authenticate(context.Context, string) (tenant.Tenant, error)
 }
 
@@ -50,6 +61,8 @@ type EventService interface {
 
 type EventQueryService interface {
 	List(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]eventquery.Event, error)
+	AdminList(context.Context, tenant.ID, string, *time.Time, *time.Time, int, bool) ([]eventquery.AdminEvent, error)
+	AdminGet(context.Context, uuid.UUID, bool) (eventquery.AdminEvent, error)
 }
 
 type ConnectedAppService interface {
@@ -66,8 +79,10 @@ type FunctionDestinationService interface {
 }
 
 type SubscriptionService interface {
-	Create(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, string, *string) (subscription.Subscription, error)
+	Create(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
+	Update(context.Context, tenant.ID, uuid.UUID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
 	List(context.Context, tenant.ID) ([]subscription.Subscription, error)
+	AdminList(context.Context, *tenant.ID, string, string) ([]subscription.Subscription, error)
 	Pause(context.Context, tenant.ID, uuid.UUID) (subscription.Subscription, error)
 	Resume(context.Context, tenant.ID, uuid.UUID) (subscription.Subscription, error)
 }
@@ -76,6 +91,8 @@ type ConnectorInstanceService interface {
 	Create(context.Context, *tenant.ID, string, string, json.RawMessage) (connectorinstance.Instance, error)
 	List(context.Context, tenant.ID) ([]connectorinstance.Instance, error)
 	ListAll(context.Context) ([]connectorinstance.Instance, error)
+	AdminList(context.Context, *tenant.ID, string, string) ([]connectorinstance.Instance, error)
+	AdminUpsert(context.Context, uuid.UUID, *tenant.ID, string, string, json.RawMessage) (connectorinstance.Instance, error)
 }
 
 type InboundRouteService interface {
@@ -86,8 +103,14 @@ type InboundRouteService interface {
 
 type DeliveryService interface {
 	List(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, int) ([]delivery.Job, error)
+	AdminList(context.Context, tenant.ID, string, *time.Time, *time.Time, int) ([]delivery.Job, error)
 	Get(context.Context, tenant.ID, uuid.UUID) (delivery.Job, error)
 	Retry(context.Context, tenant.ID, uuid.UUID) (delivery.Job, error)
+}
+
+type ReplayService interface {
+	ReplayEvent(context.Context, tenant.ID, uuid.UUID) (replay.SingleResult, error)
+	ReplayQuery(context.Context, tenant.ID, replay.QueryRequest) (replay.QueryResult, error)
 }
 
 type ResendService interface {
@@ -96,63 +119,142 @@ type ResendService interface {
 	HandleWebhook(context.Context, []byte, http.Header) error
 }
 
+type StripeService interface {
+	Enable(context.Context, tenant.ID, string, string) (uuid.UUID, error)
+	HandleWebhook(context.Context, []byte, http.Header) error
+}
+
+type SchemaService interface {
+	List(context.Context) ([]schemas.Schema, error)
+	Get(context.Context, string) (schemas.Schema, error)
+}
+
+type SlackService interface {
+	HandleEvents(context.Context, []byte, http.Header) (slackconnector.Result, error)
+}
+
+type Authenticator interface {
+	AuthenticateRequest(*http.Request) (iauth.Principal, error)
+}
+
+type APIKeyService interface {
+	Create(context.Context, tenant.ID, string) (apikey.CreatedAPIKey, error)
+	List(context.Context, tenant.ID) ([]apikey.APIKey, error)
+	Revoke(context.Context, tenant.ID, uuid.UUID) (apikey.APIKey, error)
+}
+
+type GraphService interface {
+	BuildTopology(context.Context, graph.TopologyRequest) (graph.Topology, error)
+	BuildExecution(context.Context, uuid.UUID, graph.ExecutionRequest) (graph.ExecutionGraph, error)
+}
+
+type AuditService interface {
+	Audit(context.Context, string, string, *uuid.UUID, map[string]any) error
+	AuditForTenant(context.Context, tenant.ID, string, string, *uuid.UUID, map[string]any) error
+}
+
 type Handler struct {
-	logger           *slog.Logger
-	checkers         []NamedChecker
-	routerCheckers   []NamedChecker
-	deliveryCheckers []NamedChecker
-	tenantSvc        TenantService
-	eventSvc         EventService
-	eventQuerySvc    EventQueryService
-	appSvc           ConnectedAppService
-	functionSvc      FunctionDestinationService
-	subSvc           SubscriptionService
-	connectorSvc     ConnectorInstanceService
-	inboundRouteSvc  InboundRouteService
-	deliverySvc      DeliveryService
-	resendSvc        ResendService
-	metrics          *observability.Metrics
-	authTenantFn     func(context.Context, string) (tenant.Tenant, error)
-	systemAPIKey     string
+	logger                 *slog.Logger
+	checkers               []NamedChecker
+	routerCheckers         []NamedChecker
+	deliveryCheckers       []NamedChecker
+	tenantSvc              TenantService
+	eventSvc               EventService
+	eventQuerySvc          EventQueryService
+	appSvc                 ConnectedAppService
+	functionSvc            FunctionDestinationService
+	subSvc                 SubscriptionService
+	connectorSvc           ConnectorInstanceService
+	inboundRouteSvc        InboundRouteService
+	deliverySvc            DeliveryService
+	replaySvc              ReplayService
+	adminReplaySvc         ReplayService
+	schemaSvc              SchemaService
+	resendSvc              ResendService
+	slackSvc               SlackService
+	stripeSvc              StripeService
+	metrics                *observability.Metrics
+	authTenantFn           func(context.Context, string) (tenant.Tenant, error)
+	authSvc                Authenticator
+	adminAuthSvc           Authenticator
+	adminLimiter           *rate.Limiter
+	apiKeySvc              APIKeyService
+	graphSvc               GraphService
+	auditSvc               AuditService
+	systemAPIKey           string
+	adminEnabled           bool
+	adminAllowViewPayloads bool
+	adminReplayEnabled     bool
+	adminReplayMaxEvents   int
 }
 
 type Options struct {
-	Logger             *slog.Logger
-	Checkers           []NamedChecker
-	RouterCheckers     []NamedChecker
-	DeliveryCheckers   []NamedChecker
-	Tenants            TenantService
-	EventSvc           EventService
-	EventQuerySvc      EventQueryService
-	Apps               ConnectedAppService
-	Functions          FunctionDestinationService
-	Subs               SubscriptionService
-	ConnectorInstances ConnectorInstanceService
-	InboundRoutes      InboundRouteService
-	Deliveries         DeliveryService
-	Resend             ResendService
-	SystemAPIKey       string
-	Metrics            *observability.Metrics
+	Logger                 *slog.Logger
+	Checkers               []NamedChecker
+	RouterCheckers         []NamedChecker
+	DeliveryCheckers       []NamedChecker
+	Tenants                TenantService
+	EventSvc               EventService
+	EventQuerySvc          EventQueryService
+	Apps                   ConnectedAppService
+	Functions              FunctionDestinationService
+	Subs                   SubscriptionService
+	ConnectorInstances     ConnectorInstanceService
+	InboundRoutes          InboundRouteService
+	Deliveries             DeliveryService
+	Replay                 ReplayService
+	AdminReplay            ReplayService
+	Schemas                SchemaService
+	Resend                 ResendService
+	Slack                  SlackService
+	Stripe                 StripeService
+	Auth                   Authenticator
+	AdminAuth              Authenticator
+	AdminEnabled           bool
+	AdminAllowViewPayloads bool
+	AdminReplayEnabled     bool
+	AdminRateLimitRPS      int
+	AdminReplayMaxEvents   int
+	APIKeys                APIKeyService
+	Graph                  GraphService
+	Audit                  AuditService
+	SystemAPIKey           string
+	Metrics                *observability.Metrics
 }
 
 func NewHandler(opts Options) http.Handler {
 	handler := &Handler{
-		checkers:         opts.Checkers,
-		logger:           opts.Logger,
-		routerCheckers:   opts.RouterCheckers,
-		deliveryCheckers: opts.DeliveryCheckers,
-		tenantSvc:        opts.Tenants,
-		eventSvc:         opts.EventSvc,
-		eventQuerySvc:    opts.EventQuerySvc,
-		appSvc:           opts.Apps,
-		functionSvc:      opts.Functions,
-		subSvc:           opts.Subs,
-		connectorSvc:     opts.ConnectorInstances,
-		inboundRouteSvc:  opts.InboundRoutes,
-		deliverySvc:      opts.Deliveries,
-		resendSvc:        opts.Resend,
-		metrics:          opts.Metrics,
-		systemAPIKey:     opts.SystemAPIKey,
+		checkers:               opts.Checkers,
+		logger:                 opts.Logger,
+		routerCheckers:         opts.RouterCheckers,
+		deliveryCheckers:       opts.DeliveryCheckers,
+		tenantSvc:              opts.Tenants,
+		eventSvc:               opts.EventSvc,
+		eventQuerySvc:          opts.EventQuerySvc,
+		appSvc:                 opts.Apps,
+		functionSvc:            opts.Functions,
+		subSvc:                 opts.Subs,
+		connectorSvc:           opts.ConnectorInstances,
+		inboundRouteSvc:        opts.InboundRoutes,
+		deliverySvc:            opts.Deliveries,
+		replaySvc:              opts.Replay,
+		adminReplaySvc:         opts.AdminReplay,
+		schemaSvc:              opts.Schemas,
+		resendSvc:              opts.Resend,
+		slackSvc:               opts.Slack,
+		stripeSvc:              opts.Stripe,
+		authSvc:                opts.Auth,
+		adminAuthSvc:           opts.AdminAuth,
+		adminLimiter:           newAdminLimiter(opts.AdminRateLimitRPS),
+		apiKeySvc:              opts.APIKeys,
+		graphSvc:               opts.Graph,
+		auditSvc:               opts.Audit,
+		metrics:                opts.Metrics,
+		systemAPIKey:           opts.SystemAPIKey,
+		adminEnabled:           opts.AdminEnabled,
+		adminAllowViewPayloads: opts.AdminAllowViewPayloads,
+		adminReplayEnabled:     opts.AdminReplayEnabled,
+		adminReplayMaxEvents:   opts.AdminReplayMaxEvents,
 	}
 	if handler.logger == nil {
 		handler.logger = slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil))
@@ -167,7 +269,11 @@ func NewHandler(opts Options) http.Handler {
 	mux.HandleFunc("GET /health/router", handler.routerHealth)
 	mux.HandleFunc("GET /health/delivery", handler.deliveryHealth)
 	mux.HandleFunc("GET /metrics", handler.metricsEndpoint)
+	mux.HandleFunc("GET /schemas", handler.listSchemas)
+	mux.HandleFunc("GET /schemas/{full_name}", handler.getSchema)
 	mux.HandleFunc("POST /webhooks/resend", handler.resendWebhook)
+	mux.HandleFunc("POST /webhooks/slack/events", handler.slackWebhook)
+	mux.HandleFunc("POST /webhooks/stripe", handler.stripeWebhook)
 	mux.HandleFunc("POST /tenants", handler.createTenant)
 	mux.HandleFunc("GET /tenants", handler.listTenants)
 	mux.HandleFunc("GET /tenants/{tenant_id}", handler.getTenant)
@@ -178,12 +284,18 @@ func NewHandler(opts Options) http.Handler {
 	var functionsHandler http.Handler = http.HandlerFunc(handler.functions)
 	var functionHandler http.Handler = http.HandlerFunc(handler.function)
 	var subsHandler http.Handler = http.HandlerFunc(handler.subscriptions)
+	var subReplaceHandler http.Handler = http.HandlerFunc(handler.replaceSubscription)
 	var subStatusHandler http.Handler = http.HandlerFunc(handler.subscriptionStatus)
 	var deliveriesHandler http.Handler = http.HandlerFunc(handler.deliveries)
 	var deliveryHandler http.Handler = http.HandlerFunc(handler.delivery)
 	var retryDeliveryHandler http.Handler = http.HandlerFunc(handler.retryDelivery)
+	var replayEventHandler http.Handler = http.HandlerFunc(handler.replayEvent)
+	var replayEventsHandler http.Handler = http.HandlerFunc(handler.replayEvents)
 	var resendEnableHandler http.Handler = http.HandlerFunc(handler.resendEnable)
+	var stripeEnableHandler http.Handler = http.HandlerFunc(handler.stripeEnable)
 	var resendBootstrapHandler http.Handler = http.HandlerFunc(handler.resendBootstrap)
+	var apiKeysHandler http.Handler = http.HandlerFunc(handler.apiKeys)
+	var revokeAPIKeyHandler http.Handler = http.HandlerFunc(handler.revokeAPIKey)
 	var connectorInstancesGetHandler http.Handler = http.HandlerFunc(handler.connectorInstances)
 	var connectorInstancesPostHandler http.Handler = http.HandlerFunc(handler.connectorInstances)
 	var inboundRoutesHandler http.Handler = http.HandlerFunc(handler.inboundRoutes)
@@ -192,18 +304,24 @@ func NewHandler(opts Options) http.Handler {
 		resendBootstrapHandler = handler.requireSystemAuth(resendBootstrapHandler)
 		systemInboundRoutesHandler = handler.requireSystemAuth(systemInboundRoutesHandler)
 	}
-	if handler.authTenantFn != nil {
+	if handler.authSvc != nil || handler.authTenantFn != nil {
 		eventsHandler = handler.requireTenantAuth(eventsHandler)
 		listEventsHandler = handler.requireTenantAuth(listEventsHandler)
 		appsHandler = handler.requireTenantAuth(appsHandler)
 		functionsHandler = handler.requireTenantAuth(functionsHandler)
 		functionHandler = handler.requireTenantAuth(functionHandler)
 		subsHandler = handler.requireTenantAuth(subsHandler)
+		subReplaceHandler = handler.requireTenantAuth(subReplaceHandler)
 		subStatusHandler = handler.requireTenantAuth(subStatusHandler)
 		deliveriesHandler = handler.requireTenantAuth(deliveriesHandler)
 		deliveryHandler = handler.requireTenantAuth(deliveryHandler)
 		retryDeliveryHandler = handler.requireTenantAuth(retryDeliveryHandler)
+		replayEventHandler = handler.requireTenantAuth(replayEventHandler)
+		replayEventsHandler = handler.requireTenantAuth(replayEventsHandler)
+		apiKeysHandler = handler.requireTenantAuth(apiKeysHandler)
+		revokeAPIKeyHandler = handler.requireTenantAuth(revokeAPIKeyHandler)
 		resendEnableHandler = handler.requireTenantAuth(resendEnableHandler)
+		stripeEnableHandler = handler.requireTenantAuth(stripeEnableHandler)
 		connectorInstancesGetHandler = handler.requireTenantAuth(connectorInstancesGetHandler)
 		inboundRoutesHandler = handler.requireTenantAuth(inboundRoutesHandler)
 	}
@@ -217,18 +335,44 @@ func NewHandler(opts Options) http.Handler {
 	mux.Handle("DELETE /functions/{function_id}", functionHandler)
 	mux.Handle("POST /subscriptions", subsHandler)
 	mux.Handle("GET /subscriptions", subsHandler)
+	mux.Handle("PUT /subscriptions/{subscription_id}", subReplaceHandler)
 	mux.Handle("POST /subscriptions/{subscription_id}/pause", subStatusHandler)
 	mux.Handle("POST /subscriptions/{subscription_id}/resume", subStatusHandler)
 	mux.Handle("GET /deliveries", deliveriesHandler)
 	mux.Handle("GET /deliveries/{delivery_id}", deliveryHandler)
 	mux.Handle("POST /deliveries/{delivery_id}/retry", retryDeliveryHandler)
+	mux.Handle("POST /events/{event_id}/replay", replayEventHandler)
+	mux.Handle("POST /events/replay", replayEventsHandler)
 	mux.Handle("POST /connectors/resend/enable", resendEnableHandler)
+	mux.Handle("POST /connectors/stripe/enable", stripeEnableHandler)
 	mux.Handle("POST /system/resend/bootstrap", resendBootstrapHandler)
+	mux.Handle("POST /api-keys", apiKeysHandler)
+	mux.Handle("GET /api-keys", apiKeysHandler)
+	mux.Handle("POST /api-keys/{api_key_id}/revoke", revokeAPIKeyHandler)
 	mux.Handle("POST /connector-instances", connectorInstancesPostHandler)
 	mux.Handle("GET /connector-instances", connectorInstancesGetHandler)
 	mux.Handle("POST /routes/inbound", inboundRoutesHandler)
 	mux.Handle("GET /routes/inbound", inboundRoutesHandler)
 	mux.Handle("GET /system/routes/inbound", systemInboundRoutesHandler)
+	if handler.adminEnabled {
+		mux.Handle("GET /admin/tenants", handler.requireAdmin(http.HandlerFunc(handler.adminTenants)))
+		mux.Handle("POST /admin/tenants", handler.requireAdmin(http.HandlerFunc(handler.adminTenants)))
+		mux.Handle("GET /admin/tenants/{tenant_id}", handler.requireAdmin(http.HandlerFunc(handler.adminTenant)))
+		mux.Handle("PATCH /admin/tenants/{tenant_id}", handler.requireAdmin(http.HandlerFunc(handler.adminTenant)))
+		mux.Handle("POST /admin/tenants/{tenant_id}/api-keys", handler.requireAdmin(http.HandlerFunc(handler.adminTenantAPIKeys)))
+		mux.Handle("GET /admin/tenants/{tenant_id}/api-keys", handler.requireAdmin(http.HandlerFunc(handler.adminTenantAPIKeys)))
+		mux.Handle("POST /admin/tenants/{tenant_id}/api-keys/{api_key_id}/revoke", handler.requireAdmin(http.HandlerFunc(handler.adminTenantAPIKeyRevoke)))
+		mux.Handle("GET /admin/connector-instances", handler.requireAdmin(http.HandlerFunc(handler.adminConnectorInstances)))
+		mux.Handle("PUT /admin/connector-instances/{id}", handler.requireAdmin(http.HandlerFunc(handler.adminConnectorInstance)))
+		mux.Handle("GET /admin/subscriptions", handler.requireAdmin(http.HandlerFunc(handler.adminSubscriptions)))
+		mux.Handle("POST /admin/tenants/{tenant_id}/subscriptions", handler.requireAdmin(http.HandlerFunc(handler.adminTenantSubscriptions)))
+		mux.Handle("GET /admin/events", handler.requireAdmin(http.HandlerFunc(handler.adminEvents)))
+		mux.Handle("GET /admin/delivery-jobs", handler.requireAdmin(http.HandlerFunc(handler.adminDeliveryJobs)))
+		mux.Handle("GET /admin/topology", handler.requireAdmin(http.HandlerFunc(handler.adminTopology)))
+		mux.Handle("GET /admin/events/{event_id}/execution-graph", handler.requireAdmin(http.HandlerFunc(handler.adminExecutionGraph)))
+		mux.Handle("POST /admin/events/{event_id}/replay", handler.requireAdmin(http.HandlerFunc(handler.adminReplayEvent)))
+		mux.Handle("POST /admin/events/replay", handler.requireAdmin(http.HandlerFunc(handler.adminReplayEvents)))
+	}
 
 	return mux
 }
@@ -360,6 +504,92 @@ func (h *Handler) getTenant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, record)
 }
 
+func (h *Handler) apiKeys(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.apiKeySvc == nil {
+		writeError(w, http.StatusNotImplemented, "api key service unavailable")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		var req struct {
+			Name string `json:"name"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		created, err := h.apiKeySvc.Create(r.Context(), tenantID, req.Name)
+		if err != nil {
+			switch {
+			case errors.Is(err, apikey.ErrInvalidName):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				h.logger.Error("create api key", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+				writeError(w, http.StatusInternalServerError, "failed to create api key")
+			}
+			return
+		}
+		h.audit("api_key.create", "api_key", &created.ID, map[string]any{
+			"name":       created.Name,
+			"key_prefix": created.KeyPrefix,
+		}, r.Context())
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id":         created.ID.String(),
+			"name":       created.Name,
+			"api_key":    created.Secret,
+			"key_prefix": created.KeyPrefix,
+		})
+	case http.MethodGet:
+		keys, err := h.apiKeySvc.List(r.Context(), tenantID)
+		if err != nil {
+			h.logger.Error("list api keys", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "failed to list api keys")
+			return
+		}
+		writeJSON(w, http.StatusOK, keys)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) revokeAPIKey(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.apiKeySvc == nil {
+		writeError(w, http.StatusNotImplemented, "api key service unavailable")
+		return
+	}
+	id, err := uuid.Parse(r.PathValue("api_key_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid api_key_id")
+		return
+	}
+	key, err := h.apiKeySvc.Revoke(r.Context(), tenantID, id)
+	if err != nil {
+		switch {
+		case errors.Is(err, apikey.ErrNotFound):
+			writeError(w, http.StatusNotFound, "api key not found")
+		default:
+			h.logger.Error("revoke api key", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "failed to revoke api key")
+		}
+		return
+	}
+	h.audit("api_key.revoke", "api_key", &key.ID, map[string]any{
+		"key_prefix": key.KeyPrefix,
+	}, r.Context())
+	writeJSON(w, http.StatusOK, key)
+}
+
 func (h *Handler) createEvent(w http.ResponseWriter, r *http.Request) {
 	if h.eventSvc == nil {
 		writeError(w, http.StatusNotImplemented, "event service unavailable")
@@ -387,14 +617,20 @@ func (h *Handler) createEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	event, err := h.eventSvc.Ingest(r.Context(), ingest.Request{
-		TenantID: tenantID,
-		Type:     req.Type,
-		Source:   req.Source,
-		Payload:  req.Payload,
+		TenantID:   tenantID,
+		Type:       req.Type,
+		Source:     req.Source,
+		SourceKind: stream.SourceKindExternal,
+		ChainDepth: 0,
+		Payload:    req.Payload,
 	})
 	if err != nil {
 		switch {
-		case errors.Is(err, ingest.ErrInvalidType), errors.Is(err, ingest.ErrInvalidSource):
+		case errors.Is(err, ingest.ErrInvalidType), errors.Is(err, ingest.ErrInvalidSource), errors.Is(err, ingest.ErrInvalidSourceKind), errors.Is(err, ingest.ErrInvalidChainDepth):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, ingest.ErrInvalidVersionedType):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case isSchemaReject(err):
 			writeError(w, http.StatusBadRequest, err.Error())
 		default:
 			h.logger.Error("event_publish_failed",
@@ -412,6 +648,55 @@ func (h *Handler) createEvent(w http.ResponseWriter, r *http.Request) {
 		slog.String("event_type", event.Type),
 	)
 	writeJSON(w, http.StatusOK, map[string]string{"event_id": event.EventID.String()})
+}
+
+func (h *Handler) listSchemas(w http.ResponseWriter, r *http.Request) {
+	if h.schemaSvc == nil {
+		writeError(w, http.StatusNotImplemented, "schema service unavailable")
+		return
+	}
+	records, err := h.schemaSvc.List(r.Context())
+	if err != nil {
+		h.logger.Error("list schemas", slog.String("error", err.Error()))
+		writeError(w, http.StatusInternalServerError, "failed to list schemas")
+		return
+	}
+	response := make([]map[string]any, 0, len(records))
+	for _, record := range records {
+		response = append(response, map[string]any{
+			"full_name":  record.FullName,
+			"event_type": record.EventType,
+			"version":    record.Version,
+			"source":     record.Source,
+		})
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *Handler) getSchema(w http.ResponseWriter, r *http.Request) {
+	if h.schemaSvc == nil {
+		writeError(w, http.StatusNotImplemented, "schema service unavailable")
+		return
+	}
+	record, err := h.schemaSvc.Get(r.Context(), r.PathValue("full_name"))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "schema not found")
+			return
+		}
+		h.logger.Error("get schema", slog.String("error", err.Error()))
+		writeError(w, http.StatusInternalServerError, "failed to get schema")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"full_name": record.FullName,
+		"schema":    json.RawMessage(record.SchemaJSON),
+	})
+}
+
+func isSchemaReject(err error) bool {
+	var rejectErr schemas.RejectError
+	return errors.As(err, &rejectErr)
 }
 
 func (h *Handler) listEvents(w http.ResponseWriter, r *http.Request) {
@@ -522,8 +807,11 @@ func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
 			ConnectorInstanceID   string          `json:"connector_instance_id"`
 			Operation             string          `json:"operation"`
 			OperationParams       json.RawMessage `json:"operation_params"`
+			Filter                json.RawMessage `json:"filter"`
 			EventType             string          `json:"event_type"`
 			EventSource           *string         `json:"event_source"`
+			EmitSuccessEvent      bool            `json:"emit_success_event"`
+			EmitFailureEvent      bool            `json:"emit_failure_event"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -561,11 +849,13 @@ func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
 			trimmed := strings.TrimSpace(req.Operation)
 			operation = &trimmed
 		}
-		sub, err := h.subSvc.Create(r.Context(), tenantID, req.DestinationType, appID, functionID, connectorInstanceID, operation, req.OperationParams, req.EventType, req.EventSource)
+		result, err := h.subSvc.Create(r.Context(), tenantID, req.DestinationType, appID, functionID, connectorInstanceID, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
 		if err != nil {
 			switch {
 			case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams):
 				writeError(w, http.StatusBadRequest, err.Error())
+			case isFilterValidationError(err):
+				writeSubscriptionFilterError(w, err)
 			case errors.Is(err, subscription.ErrConnectedAppNotFound):
 				writeError(w, http.StatusNotFound, "connected app not found")
 			case errors.Is(err, subscription.ErrFunctionDestinationNotFound):
@@ -582,7 +872,11 @@ func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"id": sub.ID.String()})
+		h.audit("subscription.create", "subscription", &result.Subscription.ID, map[string]any{
+			"destination_type": result.Subscription.DestinationType,
+			"event_type":       result.Subscription.EventType,
+		}, r.Context())
+		writeJSON(w, http.StatusCreated, subscriptionResponse(result))
 	case http.MethodGet:
 		subs, err := h.subSvc.List(r.Context(), tenantID)
 		if err != nil {
@@ -594,6 +888,132 @@ func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (h *Handler) replaceSubscription(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.subSvc == nil {
+		writeError(w, http.StatusNotImplemented, "subscription service unavailable")
+		return
+	}
+	subscriptionID, err := uuid.Parse(r.PathValue("subscription_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid subscription_id")
+		return
+	}
+	var req struct {
+		ConnectedAppID        string          `json:"connected_app_id"`
+		DestinationType       string          `json:"destination_type"`
+		FunctionDestinationID string          `json:"function_destination_id"`
+		ConnectorInstanceID   string          `json:"connector_instance_id"`
+		Operation             string          `json:"operation"`
+		OperationParams       json.RawMessage `json:"operation_params"`
+		Filter                json.RawMessage `json:"filter"`
+		EventType             string          `json:"event_type"`
+		EventSource           *string         `json:"event_source"`
+		EmitSuccessEvent      bool            `json:"emit_success_event"`
+		EmitFailureEvent      bool            `json:"emit_failure_event"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	appID, functionID, connectorInstanceID, operation, ok := parseSubscriptionRequestIDs(w, req.ConnectedAppID, req.FunctionDestinationID, req.ConnectorInstanceID, req.Operation)
+	if !ok {
+		return
+	}
+	result, err := h.subSvc.Update(r.Context(), tenantID, subscriptionID, req.DestinationType, appID, functionID, connectorInstanceID, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
+	if err != nil {
+		switch {
+		case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case isFilterValidationError(err):
+			writeSubscriptionFilterError(w, err)
+		case errors.Is(err, subscription.ErrConnectedAppNotFound):
+			writeError(w, http.StatusNotFound, "connected app not found")
+		case errors.Is(err, subscription.ErrFunctionDestinationNotFound):
+			writeError(w, http.StatusNotFound, "function destination not found")
+		case errors.Is(err, subscription.ErrConnectorInstanceNotFound), errors.Is(err, subscription.ErrConnectorInstanceForbidden), errors.Is(err, subscription.ErrSubscriptionNotFound):
+			writeError(w, http.StatusNotFound, "subscription not found")
+		case errors.Is(err, subscription.ErrGlobalConnectorNotAllowed):
+			writeError(w, http.StatusBadRequest, err.Error())
+		default:
+			h.logger.Error("replace subscription", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "failed to replace subscription")
+		}
+		return
+	}
+	h.audit("subscription.update", "subscription", &result.Subscription.ID, map[string]any{
+		"destination_type": result.Subscription.DestinationType,
+		"event_type":       result.Subscription.EventType,
+	}, r.Context())
+	writeJSON(w, http.StatusOK, subscriptionResponse(result))
+}
+
+func parseSubscriptionRequestIDs(w http.ResponseWriter, connectedAppIDRaw, functionDestinationIDRaw, connectorInstanceIDRaw, operationRaw string) (*uuid.UUID, *uuid.UUID, *uuid.UUID, *string, bool) {
+	var appID *uuid.UUID
+	if strings.TrimSpace(connectedAppIDRaw) != "" {
+		parsed, err := uuid.Parse(connectedAppIDRaw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid connected_app_id")
+			return nil, nil, nil, nil, false
+		}
+		appID = &parsed
+	}
+	var functionID *uuid.UUID
+	if strings.TrimSpace(functionDestinationIDRaw) != "" {
+		parsed, err := uuid.Parse(functionDestinationIDRaw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid function_destination_id")
+			return nil, nil, nil, nil, false
+		}
+		functionID = &parsed
+	}
+	var connectorInstanceID *uuid.UUID
+	if strings.TrimSpace(connectorInstanceIDRaw) != "" {
+		parsed, err := uuid.Parse(connectorInstanceIDRaw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid connector_instance_id")
+			return nil, nil, nil, nil, false
+		}
+		connectorInstanceID = &parsed
+	}
+	var operation *string
+	if strings.TrimSpace(operationRaw) != "" {
+		trimmed := strings.TrimSpace(operationRaw)
+		operation = &trimmed
+	}
+	return appID, functionID, connectorInstanceID, operation, true
+}
+
+func subscriptionResponse(result subscription.Result) map[string]any {
+	response := map[string]any{"subscription": result.Subscription}
+	if len(result.Warnings) > 0 {
+		response["warnings"] = result.Warnings
+	}
+	return response
+}
+
+func isFilterValidationError(err error) bool {
+	var filterErr subscriptionfilter.ValidationError
+	return errors.As(err, &filterErr)
+}
+
+func writeSubscriptionFilterError(w http.ResponseWriter, err error) {
+	var filterErr subscriptionfilter.ValidationError
+	if !errors.As(err, &filterErr) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusBadRequest, map[string]any{
+		"error":         filterErr.Error(),
+		"invalid_paths": filterErr.InvalidPaths,
+		"invalid_ops":   filterErr.InvalidOps,
+	})
 }
 
 func (h *Handler) connectorInstances(w http.ResponseWriter, r *http.Request) {
@@ -618,7 +1038,12 @@ func (h *Handler) connectorInstances(w http.ResponseWriter, r *http.Request) {
 		case "", connectorinstance.ScopeTenant:
 			resolvedTenantID, ok := tenantIDFromContext(r.Context())
 			if !ok {
-				resolvedTenantID, ok = h.authenticateTenantRequest(r)
+				authenticated, resolvedTenantIDValue, authenticatedOK := h.authenticateTenantRequest(r)
+				if authenticatedOK {
+					r = authenticated
+					resolvedTenantID = resolvedTenantIDValue
+				}
+				ok = authenticatedOK
 			}
 			if !ok {
 				writeError(w, http.StatusUnauthorized, "unauthorized")
@@ -638,7 +1063,7 @@ func (h *Handler) connectorInstances(w http.ResponseWriter, r *http.Request) {
 		instance, err := h.connectorSvc.Create(r.Context(), tenantID, req.ConnectorName, req.Scope, req.Config)
 		if err != nil {
 			switch {
-			case errors.Is(err, connectorinstance.ErrUnsupportedConnector), errors.Is(err, connectorinstance.ErrInvalidConfig), errors.Is(err, connectorinstance.ErrMissingBotToken), errors.Is(err, connectorinstance.ErrInvalidScope), errors.Is(err, connectorinstance.ErrGlobalNotAllowed):
+			case errors.Is(err, connectorinstance.ErrUnsupportedConnector), errors.Is(err, connectorinstance.ErrInvalidConfig), errors.Is(err, connectorinstance.ErrMissingBotToken), errors.Is(err, connectorinstance.ErrMissingWebhookSecret), errors.Is(err, connectorinstance.ErrMissingStripeAccount), errors.Is(err, connectorinstance.ErrMissingNotionToken), errors.Is(err, connectorinstance.ErrMissingLLMProviders), errors.Is(err, connectorinstance.ErrInvalidLLMProvider), errors.Is(err, connectorinstance.ErrMissingLLMAPIKey), errors.Is(err, connectorinstance.ErrInvalidScope), errors.Is(err, connectorinstance.ErrGlobalNotAllowed), errors.Is(err, connectorinstance.ErrTenantOnlyConnector), errors.Is(err, connectorinstance.ErrGlobalOnlyConnector):
 				writeError(w, http.StatusBadRequest, err.Error())
 			case errors.Is(err, connectorinstance.ErrDuplicateInstance):
 				writeError(w, http.StatusConflict, err.Error())
@@ -648,6 +1073,10 @@ func (h *Handler) connectorInstances(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
+		h.audit("connector_instance.create", "connector_instance", &instance.ID, map[string]any{
+			"connector_name": instance.ConnectorName,
+			"scope":          instance.Scope,
+		}, r.Context())
 		writeJSON(w, http.StatusOK, map[string]string{"id": instance.ID.String()})
 	case http.MethodGet:
 		tenantID, ok := tenantIDFromContext(r.Context())
@@ -898,6 +1327,11 @@ func (h *Handler) subscriptionStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	action := "subscription.resume"
+	if strings.HasSuffix(r.URL.Path, "/pause") {
+		action = "subscription.pause"
+	}
+	h.audit(action, "subscription", &sub.ID, map[string]any{"status": sub.Status}, r.Context())
 
 	writeJSON(w, http.StatusOK, map[string]string{"status": sub.Status})
 }
@@ -1002,7 +1436,110 @@ func (h *Handler) retryDelivery(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.logger.Info("delivery_retried", slog.String("tenant_id", tenantID.String()), slog.String("delivery_id", deliveryID.String()))
+	h.logger.Info("delivery_retry_requested", slog.String("tenant_id", tenantID.String()), slog.String("delivery_id", deliveryID.String()))
 	writeJSON(w, http.StatusOK, map[string]string{"status": job.Status})
+}
+
+func (h *Handler) replayEvent(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.replaySvc == nil {
+		writeError(w, http.StatusNotImplemented, "replay service unavailable")
+		return
+	}
+	eventID, err := uuid.Parse(r.PathValue("event_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid event_id")
+		return
+	}
+	h.logger.Info("event_replay_single_requested", slog.String("tenant_id", tenantID.String()), slog.String("event_id", eventID.String()))
+	result, err := h.replaySvc.ReplayEvent(r.Context(), tenantID, eventID)
+	if err != nil {
+		switch {
+		case errors.Is(err, replay.ErrEventNotFound):
+			writeError(w, http.StatusNotFound, "event not found")
+		default:
+			h.logger.Error("replay event", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "failed to replay event")
+		}
+		return
+	}
+	h.logger.Info("event_replay_completed", slog.String("tenant_id", tenantID.String()), slog.String("event_id", result.EventID.String()), slog.Int("jobs_created", result.JobsCreated))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"event_id":              result.EventID.String(),
+		"matched_subscriptions": result.MatchedSubscriptions,
+		"jobs_created":          result.JobsCreated,
+	})
+}
+
+func (h *Handler) replayEvents(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.replaySvc == nil {
+		writeError(w, http.StatusNotImplemented, "replay service unavailable")
+		return
+	}
+	var req struct {
+		From           string `json:"from"`
+		To             string `json:"to"`
+		Type           string `json:"type"`
+		Source         string `json:"source"`
+		SubscriptionID string `json:"subscription_id"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	from, err := time.Parse(time.RFC3339, strings.TrimSpace(req.From))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid from")
+		return
+	}
+	to, err := time.Parse(time.RFC3339, strings.TrimSpace(req.To))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid to")
+		return
+	}
+	var subscriptionID *uuid.UUID
+	if strings.TrimSpace(req.SubscriptionID) != "" {
+		parsed, err := uuid.Parse(req.SubscriptionID)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid subscription_id")
+			return
+		}
+		subscriptionID = &parsed
+	}
+	h.logger.Info("event_replay_query_requested", slog.String("tenant_id", tenantID.String()), slog.String("from", from.Format(time.RFC3339)), slog.String("to", to.Format(time.RFC3339)))
+	result, err := h.replaySvc.ReplayQuery(r.Context(), tenantID, replay.QueryRequest{
+		From:           from,
+		To:             to,
+		Type:           strings.TrimSpace(req.Type),
+		Source:         strings.TrimSpace(req.Source),
+		SubscriptionID: subscriptionID,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, replay.ErrInvalidWindow), errors.Is(err, replay.ErrReplayLimitExceeded), errors.Is(err, replay.ErrSubscriptionInactive):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, replay.ErrSubscriptionNotFound):
+			writeError(w, http.StatusNotFound, "subscription not found")
+		default:
+			h.logger.Error("replay events", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "failed to replay events")
+		}
+		return
+	}
+	h.logger.Info("event_replay_completed", slog.String("tenant_id", tenantID.String()), slog.String("from", from.Format(time.RFC3339)), slog.String("to", to.Format(time.RFC3339)), slog.Int("events_scanned", result.EventsScanned), slog.Int("jobs_created", result.JobsCreated))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events_scanned": result.EventsScanned,
+		"jobs_created":   result.JobsCreated,
+	})
 }
 
 func (h *Handler) resendBootstrap(w http.ResponseWriter, r *http.Request) {
@@ -1038,6 +1575,65 @@ func (h *Handler) resendEnable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"address": result.Address})
 }
 
+func (h *Handler) stripeEnable(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.stripeSvc == nil {
+		writeError(w, http.StatusNotImplemented, "stripe service unavailable")
+		return
+	}
+	var req struct {
+		StripeAccountID string `json:"stripe_account_id"`
+		WebhookSecret   string `json:"webhook_secret"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	instanceID, err := h.stripeSvc.Enable(r.Context(), tenantID, req.StripeAccountID, req.WebhookSecret)
+	if err != nil {
+		switch {
+		case errors.Is(err, stripeconnector.ErrInvalidAccountID), errors.Is(err, stripeconnector.ErrInvalidSecret):
+			writeError(w, http.StatusBadRequest, err.Error())
+		case errors.Is(err, stripeconnector.ErrRouteConflict):
+			writeError(w, http.StatusConflict, err.Error())
+		default:
+			h.logger.Error("enable stripe connector", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "failed to enable stripe connector")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"connector_instance_id": instanceID.String()})
+}
+
+func (h *Handler) slackWebhook(w http.ResponseWriter, r *http.Request) {
+	if h.slackSvc == nil {
+		writeError(w, http.StatusNotImplemented, "slack service unavailable")
+		return
+	}
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	defer func() { _ = r.Body.Close() }()
+
+	result, err := h.slackSvc.HandleEvents(r.Context(), rawBody, r.Header.Clone())
+	if err != nil {
+		h.logger.Error("handle slack webhook", slog.String("error", err.Error()))
+		writeError(w, http.StatusInternalServerError, "failed to process webhook")
+		return
+	}
+	if result.IsChallenge {
+		writeJSON(w, http.StatusOK, map[string]string{"challenge": result.Challenge})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *Handler) resendWebhook(w http.ResponseWriter, r *http.Request) {
 	if h.resendSvc == nil {
 		writeError(w, http.StatusNotImplemented, "resend service unavailable")
@@ -1052,6 +1648,30 @@ func (h *Handler) resendWebhook(w http.ResponseWriter, r *http.Request) {
 
 	if err := h.resendSvc.HandleWebhook(r.Context(), rawBody, r.Header.Clone()); err != nil {
 		h.logger.Error("handle resend webhook", slog.String("error", err.Error()))
+		writeError(w, http.StatusInternalServerError, "failed to process webhook")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (h *Handler) stripeWebhook(w http.ResponseWriter, r *http.Request) {
+	if h.stripeSvc == nil {
+		writeError(w, http.StatusNotImplemented, "stripe service unavailable")
+		return
+	}
+	rawBody, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+	defer func() { _ = r.Body.Close() }()
+
+	if err := h.stripeSvc.HandleWebhook(r.Context(), rawBody, r.Header.Clone()); err != nil {
+		if errors.Is(err, stripeconnector.ErrUnauthorized) {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		h.logger.Error("handle stripe webhook", slog.String("error", err.Error()))
 		writeError(w, http.StatusInternalServerError, "failed to process webhook")
 		return
 	}
@@ -1139,16 +1759,48 @@ func mapJobs(jobs []delivery.Job) []map[string]any {
 }
 
 func mapJob(job delivery.Job) map[string]any {
-	return map[string]any{
-		"id":               job.ID.String(),
-		"subscription_id":  job.SubscriptionID.String(),
-		"event_id":         job.EventID.String(),
-		"status":           job.Status,
-		"attempts":         job.Attempts,
-		"last_error":       job.LastError,
-		"external_id":      job.ExternalID,
-		"last_status_code": job.LastStatusCode,
-		"created_at":       job.CreatedAt,
-		"completed_at":     job.CompletedAt,
+	var replayOfEventID any
+	if job.ReplayOfEventID != nil {
+		replayOfEventID = job.ReplayOfEventID.String()
 	}
+	return map[string]any{
+		"id":                 job.ID.String(),
+		"subscription_id":    job.SubscriptionID.String(),
+		"event_id":           job.EventID.String(),
+		"is_replay":          job.IsReplay,
+		"replay_of_event_id": replayOfEventID,
+		"status":             job.Status,
+		"attempts":           job.Attempts,
+		"last_error":         job.LastError,
+		"external_id":        job.ExternalID,
+		"last_status_code":   job.LastStatusCode,
+		"result_event_id":    optionalUUIDValue(job.ResultEventID),
+		"created_at":         job.CreatedAt,
+		"completed_at":       job.CompletedAt,
+	}
+}
+
+func (h *Handler) audit(action, resourceType string, resourceID *uuid.UUID, metadata map[string]any, ctx context.Context) {
+	if h.auditSvc == nil {
+		return
+	}
+	if err := h.auditSvc.Audit(ctx, action, resourceType, resourceID, metadata); err != nil {
+		h.logger.Error("audit_failed", slog.String("action", action), slog.String("error", err.Error()))
+	}
+}
+
+func (h *Handler) adminAudit(tenantID tenant.ID, action, resourceType string, resourceID *uuid.UUID, metadata map[string]any, r *http.Request) {
+	if h.auditSvc == nil {
+		return
+	}
+	if err := h.auditSvc.AuditForTenant(r.Context(), tenantID, action, resourceType, resourceID, metadata); err != nil {
+		h.logger.Error("audit_failed", slog.String("action", action), slog.String("error", err.Error()))
+	}
+}
+
+func optionalUUIDValue(value *uuid.UUID) any {
+	if value == nil {
+		return nil
+	}
+	return value.String()
 }

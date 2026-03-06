@@ -21,24 +21,29 @@ var (
 )
 
 type Job struct {
-	ID             uuid.UUID
-	TenantID       uuid.UUID
-	SubscriptionID uuid.UUID
-	EventID        uuid.UUID
-	Status         string
-	Attempts       int
-	LastError      *string
-	ExternalID     *string
-	LastStatusCode *int
-	CompletedAt    *time.Time
-	CreatedAt      time.Time
+	ID              uuid.UUID
+	TenantID        uuid.UUID
+	SubscriptionID  uuid.UUID
+	EventID         uuid.UUID
+	IsReplay        bool
+	ReplayOfEventID *uuid.UUID
+	ResultEventID   *uuid.UUID
+	Status          string
+	Attempts        int
+	LastError       *string
+	ExternalID      *string
+	LastStatusCode  *int
+	CompletedAt     *time.Time
+	CreatedAt       time.Time
 }
 
 type JobRecord struct {
-	ID             uuid.UUID
-	TenantID       uuid.UUID
-	SubscriptionID uuid.UUID
-	EventID        uuid.UUID
-	Status         string
-	CreatedAt      time.Time
+	ID              uuid.UUID
+	TenantID        uuid.UUID
+	SubscriptionID  uuid.UUID
+	EventID         uuid.UUID
+	IsReplay        bool
+	ReplayOfEventID *uuid.UUID
+	Status          string
+	CreatedAt       time.Time
 }

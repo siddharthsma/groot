@@ -10,20 +10,26 @@ import (
 
 	"github.com/google/uuid"
 
+	"groot/internal/schemas"
 	"groot/internal/stream"
 	"groot/internal/tenant"
 )
 
 var (
-	ErrInvalidType   = errors.New("type is required")
-	ErrInvalidSource = errors.New("source is required")
+	ErrInvalidType          = errors.New("type is required")
+	ErrInvalidSource        = errors.New("source is required")
+	ErrInvalidSourceKind    = errors.New("source_kind must be external or internal")
+	ErrInvalidChainDepth    = errors.New("chain_depth must be at least 0")
+	ErrInvalidVersionedType = errors.New("type must be versioned like <event>.v1")
 )
 
 type Request struct {
-	TenantID tenant.ID
-	Type     string
-	Source   string
-	Payload  json.RawMessage
+	TenantID   tenant.ID
+	Type       string
+	Source     string
+	SourceKind string
+	ChainDepth int
+	Payload    json.RawMessage
 }
 
 type Publisher interface {
@@ -50,22 +56,42 @@ type Service struct {
 	log       Logger
 	metrics   Metrics
 	now       func() time.Time
+	schemas   SchemaValidator
 }
 
-func NewService(publisher Publisher, store EventStore, logger Logger, metrics Metrics) *Service {
-	return &Service{
+type SchemaValidator interface {
+	ValidateEvent(context.Context, string, string, string, json.RawMessage) (schemas.Schema, error)
+}
+
+type Option func(*Service)
+
+func WithSchemaValidator(validator SchemaValidator) Option {
+	return func(s *Service) {
+		s.schemas = validator
+	}
+}
+
+func NewService(publisher Publisher, store EventStore, logger Logger, metrics Metrics, options ...Option) *Service {
+	service := &Service{
 		publisher: publisher,
 		store:     store,
 		log:       logger,
 		metrics:   metrics,
 		now:       func() time.Time { return time.Now().UTC() },
 	}
+	for _, option := range options {
+		option(service)
+	}
+	return service
 }
 
 func (s *Service) Ingest(ctx context.Context, req Request) (stream.Event, error) {
 	eventType := strings.TrimSpace(req.Type)
 	if eventType == "" {
 		return stream.Event{}, ErrInvalidType
+	}
+	if _, _, ok := schemas.ParseFullName(eventType); !ok {
+		return stream.Event{}, ErrInvalidVersionedType
 	}
 
 	source := strings.TrimSpace(req.Source)
@@ -79,12 +105,30 @@ func (s *Service) Ingest(ctx context.Context, req Request) (stream.Event, error)
 	}
 
 	event := stream.Event{
-		EventID:   uuid.New(),
-		TenantID:  req.TenantID,
-		Type:      eventType,
-		Source:    source,
-		Timestamp: s.now(),
-		Payload:   payload,
+		EventID:    uuid.New(),
+		TenantID:   req.TenantID,
+		Type:       eventType,
+		Source:     source,
+		SourceKind: normalizeSourceKind(req.SourceKind),
+		ChainDepth: req.ChainDepth,
+		Timestamp:  s.now(),
+		Payload:    payload,
+	}
+	if event.SourceKind == "" {
+		return stream.Event{}, ErrInvalidSourceKind
+	}
+	if event.ChainDepth < 0 {
+		return stream.Event{}, ErrInvalidChainDepth
+	}
+	if s.schemas != nil {
+		schema, err := s.schemas.ValidateEvent(ctx, event.Type, event.Source, event.SourceKind, event.Payload)
+		if err != nil {
+			return stream.Event{}, err
+		}
+		if schema.FullName != "" {
+			event.SchemaFullName = schema.FullName
+			event.SchemaVersion = schema.Version
+		}
 	}
 
 	if err := s.publisher.PublishEvent(ctx, event); err != nil {
@@ -118,4 +162,15 @@ func (s *Service) Ingest(ctx context.Context, req Request) (stream.Event, error)
 	}
 
 	return event, nil
+}
+
+func normalizeSourceKind(value string) string {
+	switch strings.TrimSpace(value) {
+	case "", stream.SourceKindExternal:
+		return stream.SourceKindExternal
+	case stream.SourceKindInternal:
+		return stream.SourceKindInternal
+	default:
+		return ""
+	}
 }

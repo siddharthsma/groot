@@ -8,13 +8,22 @@ import (
 )
 
 type Event struct {
-	EventID   uuid.UUID       `json:"event_id"`
-	TenantID  uuid.UUID       `json:"tenant_id"`
-	Type      string          `json:"type"`
-	Source    string          `json:"source"`
-	Timestamp time.Time       `json:"timestamp"`
-	Payload   json.RawMessage `json:"payload"`
+	EventID        uuid.UUID       `json:"event_id"`
+	TenantID       uuid.UUID       `json:"tenant_id"`
+	Type           string          `json:"type"`
+	Source         string          `json:"source"`
+	SourceKind     string          `json:"source_kind"`
+	ChainDepth     int             `json:"chain_depth"`
+	Timestamp      time.Time       `json:"timestamp"`
+	Payload        json.RawMessage `json:"payload"`
+	SchemaFullName string          `json:"-"`
+	SchemaVersion  int             `json:"-"`
 }
+
+const (
+	SourceKindExternal = "external"
+	SourceKindInternal = "internal"
+)
 
 func UnmarshalEvent(data []byte, event *Event) error {
 	return json.Unmarshal(data, event)

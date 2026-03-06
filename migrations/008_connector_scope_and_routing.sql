@@ -8,7 +8,13 @@ ADD COLUMN IF NOT EXISTS owner_tenant_id UUID;
 
 UPDATE connector_instances
 SET owner_tenant_id = tenant_id
-WHERE owner_tenant_id IS NULL;
+WHERE owner_tenant_id IS NULL
+  AND scope = 'tenant';
+
+UPDATE connector_instances
+SET owner_tenant_id = NULL
+WHERE scope = 'global'
+  AND owner_tenant_id IS NOT NULL;
 
 ALTER TABLE connector_instances
 DROP CONSTRAINT IF EXISTS connector_instances_scope_check;

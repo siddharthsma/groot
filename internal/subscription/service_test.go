@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"groot/internal/agent"
 	"groot/internal/connectedapp"
 	"groot/internal/connectorinstance"
 	"groot/internal/functiondestination"
@@ -15,18 +16,36 @@ import (
 )
 
 type stubStore struct {
-	createFn func(context.Context, Record) (Subscription, error)
-	listFn   func(context.Context, tenant.ID) ([]Subscription, error)
-	matchFn  func(context.Context, tenant.ID, string, string) ([]Subscription, error)
-	setFn    func(context.Context, tenant.ID, uuid.UUID, string) (Subscription, error)
+	createFn    func(context.Context, Record) (Subscription, error)
+	updateFn    func(context.Context, tenant.ID, uuid.UUID, Record) (Subscription, error)
+	getFn       func(context.Context, tenant.ID, uuid.UUID) (Subscription, error)
+	listFn      func(context.Context, tenant.ID) ([]Subscription, error)
+	adminListFn func(context.Context, *tenant.ID, string, string) ([]Subscription, error)
+	matchFn     func(context.Context, tenant.ID, string, string) ([]Subscription, error)
+	setFn       func(context.Context, tenant.ID, uuid.UUID, string) (Subscription, error)
 }
 
 func (s stubStore) CreateSubscription(ctx context.Context, record Record) (Subscription, error) {
 	return s.createFn(ctx, record)
 }
 
+func (s stubStore) UpdateSubscription(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, record Record) (Subscription, error) {
+	return s.updateFn(ctx, tenantID, subscriptionID, record)
+}
+
+func (s stubStore) GetSubscription(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID) (Subscription, error) {
+	return s.getFn(ctx, tenantID, subscriptionID)
+}
+
 func (s stubStore) ListSubscriptions(ctx context.Context, tenantID tenant.ID) ([]Subscription, error) {
 	return s.listFn(ctx, tenantID)
+}
+
+func (s stubStore) ListSubscriptionsAdmin(ctx context.Context, tenantID *tenant.ID, eventType, destinationType string) ([]Subscription, error) {
+	if s.adminListFn == nil {
+		return nil, nil
+	}
+	return s.adminListFn(ctx, tenantID, eventType, destinationType)
 }
 
 func (s stubStore) ListMatchingSubscriptions(ctx context.Context, tenantID tenant.ID, eventType, eventSource string) ([]Subscription, error) {
@@ -64,7 +83,7 @@ func (s stubConnectorInstances) GetConnectorInstance(ctx context.Context, tenant
 func TestCreateRequiresEventType(t *testing.T) {
 	svc := NewService(stubStore{}, stubApps{}, stubFunctions{}, stubConnectorInstances{}, true)
 	appID := uuid.New()
-	_, err := svc.Create(context.Background(), tenant.ID{}, DestinationTypeWebhook, &appID, nil, nil, nil, nil, " ", nil)
+	_, err := svc.Create(context.Background(), tenant.ID{}, DestinationTypeWebhook, &appID, nil, nil, nil, nil, nil, " ", nil, false, false)
 	if !errors.Is(err, ErrInvalidEventType) {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -115,10 +134,11 @@ func TestCreateFunctionSubscription(t *testing.T) {
 		},
 	}, stubConnectorInstances{}, true)
 
-	sub, err := svc.Create(context.Background(), tenantID, DestinationTypeFunction, nil, &functionID, nil, nil, nil, "example.event", nil)
+	result, err := svc.Create(context.Background(), tenantID, DestinationTypeFunction, nil, &functionID, nil, nil, nil, nil, "example.event.v1", nil, false, false)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	sub := result.Subscription
 	if sub.DestinationType != DestinationTypeFunction {
 		t.Fatalf("sub.DestinationType = %q", sub.DestinationType)
 	}
@@ -155,10 +175,11 @@ func TestCreateConnectorSubscription(t *testing.T) {
 		},
 	}, true)
 
-	sub, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, params, "resend.email.received", nil)
+	result, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, params, nil, "resend.email.received.v1", nil, false, false)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
+	sub := result.Subscription
 	if sub.DestinationType != DestinationTypeConnector {
 		t.Fatalf("sub.DestinationType = %q", sub.DestinationType)
 	}
@@ -180,8 +201,174 @@ func TestCreateRejectsGlobalConnectorWhenDisabled(t *testing.T) {
 		},
 	}, false)
 
-	_, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, json.RawMessage(`{"text":"hello"}`), "example.event", nil)
+	_, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, json.RawMessage(`{"text":"hello"}`), nil, "example.event.v1", nil, false, false)
 	if !errors.Is(err, ErrGlobalConnectorNotAllowed) {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestCreateAllowsGlobalLLMConnectorWhenDisabled(t *testing.T) {
+	connectorID := uuid.New()
+	tenantID := tenant.ID(uuid.New())
+	operation := "generate"
+
+	svc := NewService(stubStore{
+		createFn: func(_ context.Context, record Record) (Subscription, error) {
+			return Subscription{ID: record.ID, DestinationType: record.DestinationType}, nil
+		},
+	}, stubApps{}, stubFunctions{}, stubConnectorInstances{
+		getFn: func(context.Context, tenant.ID, uuid.UUID) (connectorinstance.Instance, error) {
+			return connectorinstance.Instance{
+				ID:            connectorID,
+				ConnectorName: connectorinstance.ConnectorNameLLM,
+				Scope:         connectorinstance.ScopeGlobal,
+				Config:        json.RawMessage(`{"default_provider":"openai","providers":{"openai":{"api_key":"env:OPENAI_API_KEY"}}}`),
+			}, nil
+		},
+	}, false)
+
+	_, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, json.RawMessage(`{"prompt":"Hello {{payload.text}}"}`), nil, "example.event.v1", nil, false, false)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestCreatePersistsEmitFlags(t *testing.T) {
+	connectorID := uuid.New()
+	tenantID := tenant.ID(uuid.New())
+	operation := "post_message"
+
+	svc := NewService(stubStore{
+		createFn: func(_ context.Context, record Record) (Subscription, error) {
+			if !record.EmitSuccessEvent || !record.EmitFailureEvent {
+				t.Fatalf("emit flags not persisted: success=%t failure=%t", record.EmitSuccessEvent, record.EmitFailureEvent)
+			}
+			return Subscription{
+				ID:               record.ID,
+				EmitSuccessEvent: record.EmitSuccessEvent,
+				EmitFailureEvent: record.EmitFailureEvent,
+			}, nil
+		},
+	}, stubApps{}, stubFunctions{}, stubConnectorInstances{
+		getFn: func(context.Context, tenant.ID, uuid.UUID) (connectorinstance.Instance, error) {
+			return connectorinstance.Instance{
+				ID:            connectorID,
+				ConnectorName: connectorinstance.ConnectorNameSlack,
+				Scope:         connectorinstance.ScopeTenant,
+				OwnerTenantID: ptrUUID(uuid.UUID(tenantID)),
+				Config:        json.RawMessage(`{"bot_token":"xoxb-123","default_channel":"#alerts"}`),
+			}, nil
+		},
+	}, true)
+
+	result, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, json.RawMessage(`{"text":"hello"}`), nil, "example.event.v1", nil, true, true)
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	sub := result.Subscription
+	if !sub.EmitSuccessEvent || !sub.EmitFailureEvent {
+		t.Fatalf("sub = %+v", sub)
+	}
+}
+
+func TestCreateLLMAgentSubscription(t *testing.T) {
+	connectorID := uuid.New()
+	functionID := uuid.New()
+	tenantID := tenant.ID(uuid.New())
+	operation := "agent"
+	params := json.RawMessage(`{
+		"instructions":"Triage inbound support messages",
+		"allowed_tools":["slack.post_message","notify_support"],
+		"tool_bindings":{
+			"notify_support":{
+				"type":"function",
+				"function_destination_id":"` + functionID.String() + `"
+			}
+		},
+		"max_steps":4
+	}`)
+
+	svc := NewService(stubStore{
+		createFn: func(_ context.Context, record Record) (Subscription, error) {
+			if record.Operation == nil || *record.Operation != operation {
+				t.Fatalf("record.Operation = %v", record.Operation)
+			}
+			cfg, err := agent.ParseConfig(record.OperationParams)
+			if err != nil {
+				t.Fatalf("ParseConfig() error = %v", err)
+			}
+			if got, want := len(cfg.AllowedTools), 2; got != want {
+				t.Fatalf("len(AllowedTools) = %d, want %d", got, want)
+			}
+			return Subscription{ID: record.ID, DestinationType: record.DestinationType, Operation: record.Operation}, nil
+		},
+	}, stubApps{}, stubFunctions{
+		getFn: func(_ context.Context, gotTenantID tenant.ID, gotID uuid.UUID) (functiondestination.Destination, error) {
+			if gotTenantID != tenantID || gotID != functionID {
+				t.Fatal("unexpected function destination lookup")
+			}
+			return functiondestination.Destination{ID: functionID}, nil
+		},
+	}, stubConnectorInstances{
+		getFn: func(_ context.Context, gotTenantID tenant.ID, gotID uuid.UUID) (connectorinstance.Instance, error) {
+			if gotTenantID != tenantID || gotID != connectorID {
+				t.Fatal("unexpected connector lookup")
+			}
+			return connectorinstance.Instance{
+				ID:            connectorID,
+				ConnectorName: connectorinstance.ConnectorNameLLM,
+				Scope:         connectorinstance.ScopeGlobal,
+				Config:        json.RawMessage(`{"default_provider":"openai","providers":{"openai":{"api_key":"env:OPENAI_API_KEY"}}}`),
+			}, nil
+		},
+	}, false)
+
+	if _, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, params, nil, "resend.email.received.v1", nil, true, true); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestCreateRejectsRawFunctionInvokeAgentTool(t *testing.T) {
+	connectorID := uuid.New()
+	tenantID := tenant.ID(uuid.New())
+	operation := "agent"
+
+	svc := NewService(stubStore{}, stubApps{}, stubFunctions{}, stubConnectorInstances{
+		getFn: func(_ context.Context, _ tenant.ID, _ uuid.UUID) (connectorinstance.Instance, error) {
+			return connectorinstance.Instance{
+				ID:            connectorID,
+				ConnectorName: connectorinstance.ConnectorNameLLM,
+				Scope:         connectorinstance.ScopeGlobal,
+				Config:        json.RawMessage(`{"default_provider":"openai","providers":{"openai":{"api_key":"env:OPENAI_API_KEY"}}}`),
+			}, nil
+		},
+	}, false)
+
+	_, err := svc.Create(
+		context.Background(),
+		tenantID,
+		DestinationTypeConnector,
+		nil,
+		nil,
+		&connectorID,
+		&operation,
+		json.RawMessage(`{"instructions":"Do work","allowed_tools":["function.invoke"]}`),
+		nil,
+		"example.event.v1",
+		nil,
+		false,
+		false,
+	)
+	if !errors.Is(err, ErrInvalidOperationParams) {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestCreateRejectsUnversionedEventType(t *testing.T) {
+	svc := NewService(stubStore{}, stubApps{}, stubFunctions{}, stubConnectorInstances{}, true)
+	appID := uuid.New()
+	_, err := svc.Create(context.Background(), tenant.ID{}, DestinationTypeWebhook, &appID, nil, nil, nil, nil, nil, "example.event", nil, false, false)
+	if !errors.Is(err, ErrInvalidEventType) {
 		t.Fatalf("Create() error = %v", err)
 	}
 }

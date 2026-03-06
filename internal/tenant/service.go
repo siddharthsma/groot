@@ -37,6 +37,7 @@ type Store interface {
 	CreateTenant(context.Context, TenantRecord) (Tenant, error)
 	ListTenants(context.Context) ([]Tenant, error)
 	GetTenant(context.Context, ID) (Tenant, error)
+	UpdateTenantName(context.Context, ID, string) (Tenant, error)
 	GetTenantByAPIKeyHash(context.Context, string) (Tenant, error)
 }
 
@@ -94,6 +95,14 @@ func (s *Service) ListTenants(ctx context.Context) ([]Tenant, error) {
 
 func (s *Service) GetTenant(ctx context.Context, id ID) (Tenant, error) {
 	return s.store.GetTenant(ctx, id)
+}
+
+func (s *Service) UpdateTenantName(ctx context.Context, id ID, name string) (Tenant, error) {
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		return Tenant{}, ErrInvalidTenantName
+	}
+	return s.store.UpdateTenantName(ctx, id, trimmedName)
 }
 
 func (s *Service) Authenticate(ctx context.Context, apiKey string) (Tenant, error) {

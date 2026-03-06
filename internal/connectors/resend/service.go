@@ -27,7 +27,7 @@ import (
 
 const (
 	ConnectorName              = "resend"
-	EventTypeEmailReceived     = "resend.email.received"
+	EventTypeEmailReceived     = "resend.email.received.v1"
 	EventSourceResend          = "resend"
 	systemSettingWebhookID     = "resend_webhook_id"
 	systemSettingSigningSecret = "resend_webhook_signing_secret"

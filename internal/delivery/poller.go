@@ -35,6 +35,7 @@ type Poller struct {
 	client  WorkflowStarter
 	logger  *slog.Logger
 	retry   config.DeliveryRetryConfig
+	agent   config.AgentConfig
 	metrics Metrics
 	ticker  func(time.Duration) ticker
 }
@@ -52,12 +53,13 @@ type realTicker struct{ *time.Ticker }
 
 func (t realTicker) C() <-chan time.Time { return t.Ticker.C }
 
-func NewPoller(store Store, temporalClient WorkflowStarter, logger *slog.Logger, retry config.DeliveryRetryConfig, metrics Metrics) *Poller {
+func NewPoller(store Store, temporalClient WorkflowStarter, logger *slog.Logger, retry config.DeliveryRetryConfig, agent config.AgentConfig, metrics Metrics) *Poller {
 	return &Poller{
 		store:   store,
 		client:  temporalClient,
 		logger:  logger,
 		retry:   retry,
+		agent:   agent,
 		metrics: metrics,
 		ticker:  func(d time.Duration) ticker { return realTicker{Ticker: time.NewTicker(d)} },
 	}
@@ -103,7 +105,7 @@ func (p *Poller) pollOnce(ctx context.Context) error {
 				BackoffCoefficient: 2,
 				MaximumInterval:    p.retry.MaxInterval,
 			},
-		}, WorkflowName, job.ID.String(), p.retry.MaxAttempts)
+		}, WorkflowName, job.ID.String(), p.retry.MaxAttempts, p.agent)
 		if err != nil {
 			var startedErr *serviceerror.WorkflowExecutionAlreadyStarted
 			if errors.As(err, &startedErr) {

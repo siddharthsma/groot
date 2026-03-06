@@ -53,6 +53,7 @@ func TestPollOnceStartsWorkflow(t *testing.T) {
 		}},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		config.DeliveryRetryConfig{MaxAttempts: 3, InitialInterval: time.Second, MaxInterval: 5 * time.Second},
+		config.AgentConfig{MaxSteps: 8, StepTimeout: 30 * time.Second, TotalTimeout: 2 * time.Minute, MaxToolCalls: 8, MaxToolOutputBytes: 16384},
 		nil,
 	)
 	if err := p.pollOnce(context.Background()); err != nil {
