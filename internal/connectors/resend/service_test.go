@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	svix "github.com/svix/svix-webhooks/go"
 
 	"groot/internal/config"
+	"groot/internal/inboundroute"
 	"groot/internal/ingest"
 	"groot/internal/stream"
 	"groot/internal/tenant"
@@ -21,9 +23,9 @@ import (
 
 type stubStore struct {
 	ensureConnectorInstanceFn func(context.Context, tenant.ID, string, time.Time) error
-	getResendRouteByTenantFn  func(context.Context, tenant.ID) (string, error)
-	createResendRouteFn       func(context.Context, tenant.ID, string, time.Time) error
-	getResendRouteTenantFn    func(context.Context, string) (tenant.ID, error)
+	getInboundRouteByTenantFn func(context.Context, string, tenant.ID) (inboundroute.Route, error)
+	createInboundRouteFn      func(context.Context, inboundroute.Record) (inboundroute.Route, error)
+	getInboundRouteFn         func(context.Context, string, string) (inboundroute.Route, error)
 	getSystemSettingFn        func(context.Context, string) (string, error)
 	upsertSystemSettingFn     func(context.Context, string, string) error
 }
@@ -31,14 +33,14 @@ type stubStore struct {
 func (s stubStore) EnsureConnectorInstance(ctx context.Context, tenantID tenant.ID, connectorName string, createdAt time.Time) error {
 	return s.ensureConnectorInstanceFn(ctx, tenantID, connectorName, createdAt)
 }
-func (s stubStore) GetResendRouteByTenant(ctx context.Context, tenantID tenant.ID) (string, error) {
-	return s.getResendRouteByTenantFn(ctx, tenantID)
+func (s stubStore) GetInboundRouteByTenant(ctx context.Context, connectorName string, tenantID tenant.ID) (inboundroute.Route, error) {
+	return s.getInboundRouteByTenantFn(ctx, connectorName, tenantID)
 }
-func (s stubStore) CreateResendRoute(ctx context.Context, tenantID tenant.ID, token string, createdAt time.Time) error {
-	return s.createResendRouteFn(ctx, tenantID, token, createdAt)
+func (s stubStore) CreateInboundRoute(ctx context.Context, record inboundroute.Record) (inboundroute.Route, error) {
+	return s.createInboundRouteFn(ctx, record)
 }
-func (s stubStore) GetResendRouteTenant(ctx context.Context, token string) (tenant.ID, error) {
-	return s.getResendRouteTenantFn(ctx, token)
+func (s stubStore) GetInboundRoute(ctx context.Context, connectorName, routeKey string) (inboundroute.Route, error) {
+	return s.getInboundRouteFn(ctx, connectorName, routeKey)
 }
 func (s stubStore) GetSystemSetting(ctx context.Context, key string) (string, error) {
 	return s.getSystemSettingFn(ctx, key)
@@ -59,10 +61,12 @@ func TestEnableReturnsExistingRoute(t *testing.T) {
 	var tenantID tenant.ID
 	svc := NewService(config.ResendConfig{ReceivingDomain: "example.resend.app"}, stubStore{
 		ensureConnectorInstanceFn: func(context.Context, tenant.ID, string, time.Time) error { return nil },
-		getResendRouteByTenantFn:  func(context.Context, tenant.ID) (string, error) { return "abc123", nil },
-		createResendRouteFn: func(context.Context, tenant.ID, string, time.Time) error {
+		getInboundRouteByTenantFn: func(context.Context, string, tenant.ID) (inboundroute.Route, error) {
+			return inboundroute.Route{RouteKey: "abc123"}, nil
+		},
+		createInboundRouteFn: func(context.Context, inboundroute.Record) (inboundroute.Route, error) {
 			t.Fatal("should not create route")
-			return nil
+			return inboundroute.Route{}, nil
 		},
 	}, nil, slog.Default(), nil, nil)
 
@@ -104,11 +108,14 @@ func TestHandleWebhookPublishesEvent(t *testing.T) {
 			}
 			return secret, nil
 		},
-		getResendRouteTenantFn: func(_ context.Context, token string) (tenant.ID, error) {
+		getInboundRouteFn: func(_ context.Context, connectorName, token string) (inboundroute.Route, error) {
+			if connectorName != ConnectorName {
+				t.Fatalf("connectorName = %q", connectorName)
+			}
 			if token != "token123" {
 				t.Fatalf("token = %q", token)
 			}
-			return tenantID, nil
+			return inboundroute.Route{TenantID: uuid.UUID(tenantID)}, nil
 		},
 	}, stubIngestor{
 		ingestFn: func(_ context.Context, req ingest.Request) (stream.Event, error) {

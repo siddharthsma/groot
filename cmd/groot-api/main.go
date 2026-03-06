@@ -18,6 +18,7 @@ import (
 	"groot/internal/eventquery"
 	"groot/internal/functiondestination"
 	"groot/internal/httpapi"
+	"groot/internal/inboundroute"
 	"groot/internal/ingest"
 	"groot/internal/observability"
 	"groot/internal/router"
@@ -93,9 +94,10 @@ func main() {
 
 	tenantService := tenant.NewService(db)
 	appService := connectedapp.NewService(db)
-	connectorInstanceService := connectorinstance.NewService(db)
+	connectorInstanceService := connectorinstance.NewService(db, cfg.AllowGlobalInstances)
+	inboundRouteService := inboundroute.NewService(db, metrics)
 	functionService := functiondestination.NewService(db)
-	subscriptionService := subscription.NewService(db, appService, functionService, connectorInstanceService)
+	subscriptionService := subscription.NewService(db, appService, functionService, connectorInstanceService, cfg.AllowGlobalInstances)
 	eventService := ingest.NewService(kafkaClient, db, logger, metrics)
 	eventQueryService := eventquery.NewService(db)
 	deliveryService := delivery.NewService(db)
@@ -123,6 +125,7 @@ func main() {
 		Functions:          functionService,
 		Subs:               subscriptionService,
 		ConnectorInstances: connectorInstanceService,
+		InboundRoutes:      inboundRouteService,
 		EventSvc:           eventService,
 		EventQuerySvc:      eventQueryService,
 		Deliveries:         deliveryService,

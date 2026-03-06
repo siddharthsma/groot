@@ -1,6 +1,6 @@
 # Groot
 
-Groot is a multi-tenant event hub. Phase 7 adds outbound connector runtime with tenant-managed connector instances and Slack `post_message` delivery.
+Groot is a multi-tenant event hub. Phase 8 adds connector instance scope, generic inbound routing, and shared global connector support.
 
 ## Stack
 
@@ -34,6 +34,7 @@ The service reads all runtime configuration from environment variables.
 | `TEMPORAL_ADDRESS` | Temporal frontend address | `temporal:7233` |
 | `TEMPORAL_NAMESPACE` | Temporal namespace | `default` |
 | `GROOT_SYSTEM_API_KEY` | Bearer token for system-only endpoints | `system-secret` |
+| `GROOT_ALLOW_GLOBAL_INSTANCES` | Allow subscriptions to use global connector instances | `true` |
 | `RESEND_API_KEY` | Resend API key used for webhook bootstrap | `re_test` |
 | `RESEND_WEBHOOK_PUBLIC_URL` | Public Resend webhook endpoint URL | `https://example.com/webhooks/resend` |
 | `RESEND_RECEIVING_DOMAIN` | Resend receiving domain used for tenant inbound addresses | `example.resend.app` |
@@ -86,7 +87,10 @@ The service reads all runtime configuration from environment variables.
 - `GET /functions/{function_id}`: fetch one function destination for the authenticated tenant
 - `DELETE /functions/{function_id}`: delete a function destination if no active function subscription references it
 - `POST /connector-instances`: create a tenant connector instance such as Slack
-- `GET /connector-instances`: list tenant connector instances without secrets
+- `GET /connector-instances`: list tenant-owned and global connector instances without secrets
+- `POST /routes/inbound`: create a tenant inbound route
+- `GET /routes/inbound`: list tenant inbound routes
+- `GET /system/routes/inbound`: system-authenticated list of all inbound routes
 - `POST /subscriptions`: create a webhook, function, or connector subscription for the authenticated tenant
 - `GET /subscriptions`: list subscriptions for the authenticated tenant
 - `POST /subscriptions/{subscription_id}/pause`: pause a tenant subscription
@@ -204,6 +208,15 @@ Phase 7 extends that flow by:
 - recording connector delivery `external_id` and `last_status_code`
 - exposing connector delivery counters in `GET /metrics`
 
+Phase 8 extends that flow by:
+
+- adding `scope` and `owner_tenant_id` to connector instances
+- allowing tenant-owned or global connector instances
+- resolving inbound tenants through generic `inbound_routes`
+- moving Resend enablement to `inbound_routes`
+- exposing tenant and system inbound route APIs
+- exposing inbound routing and global connector metrics
+
 The API binary now runs:
 
 - the HTTP API
@@ -239,3 +252,8 @@ Phase 7 adds `migrations/007_outbound_connectors.sql`, which:
 - adds connector destination fields to `subscriptions`
 - adds `delivery_jobs.external_id`
 - adds `delivery_jobs.last_status_code`
+
+Phase 8 adds `migrations/008_connector_scope_and_routing.sql`, which:
+
+- adds `scope` and `owner_tenant_id` to `connector_instances`
+- creates `inbound_routes`

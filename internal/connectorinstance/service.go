@@ -16,12 +16,18 @@ import (
 const (
 	ConnectorNameSlack  = "slack"
 	ConnectorNameResend = "resend"
+	ScopeTenant         = "tenant"
+	ScopeGlobal         = "global"
 )
+
+var GlobalTenantID = uuid.Nil
 
 type Instance struct {
 	ID            uuid.UUID       `json:"id"`
 	TenantID      uuid.UUID       `json:"-"`
+	OwnerTenantID *uuid.UUID      `json:"-"`
 	ConnectorName string          `json:"connector_name"`
+	Scope         string          `json:"scope"`
 	Status        string          `json:"status"`
 	Config        json.RawMessage `json:"-"`
 	CreatedAt     time.Time       `json:"-"`
@@ -30,7 +36,9 @@ type Instance struct {
 type Record struct {
 	ID            uuid.UUID
 	TenantID      tenant.ID
+	OwnerTenantID *tenant.ID
 	ConnectorName string
+	Scope         string
 	Status        string
 	Config        json.RawMessage
 	CreatedAt     time.Time
@@ -47,31 +55,44 @@ var (
 	ErrNotFound             = errors.New("connector instance not found")
 	ErrInvalidConfig        = errors.New("invalid connector config")
 	ErrMissingBotToken      = errors.New("config.bot_token is required")
+	ErrInvalidScope         = errors.New("scope must be tenant or global")
+	ErrGlobalNotAllowed     = errors.New("global connector instances are disabled")
 )
 
 type Store interface {
 	CreateConnectorInstance(context.Context, Record) (Instance, error)
 	ListConnectorInstances(context.Context, tenant.ID) ([]Instance, error)
+	ListAllConnectorInstances(context.Context) ([]Instance, error)
 	GetConnectorInstance(context.Context, tenant.ID, uuid.UUID) (Instance, error)
 }
 
 type Service struct {
-	store Store
-	now   func() time.Time
+	store                Store
+	allowGlobalInstances bool
+	now                  func() time.Time
 }
 
-func NewService(store Store) *Service {
+func NewService(store Store, allowGlobalInstances bool) *Service {
 	return &Service{
-		store: store,
-		now:   func() time.Time { return time.Now().UTC() },
+		store:                store,
+		allowGlobalInstances: allowGlobalInstances,
+		now:                  func() time.Time { return time.Now().UTC() },
 	}
 }
 
-func (s *Service) Create(ctx context.Context, tenantID tenant.ID, connectorName string, config json.RawMessage) (Instance, error) {
+func (s *Service) Create(ctx context.Context, tenantID *tenant.ID, connectorName string, scope string, config json.RawMessage) (Instance, error) {
 	normalizedName := strings.TrimSpace(connectorName)
 	if normalizedName != ConnectorNameSlack {
 		return Instance{}, ErrUnsupportedConnector
 	}
+	normalizedScope, tenantValue, ownerTenantID, err := normalizeScope(scope, tenantID)
+	if err != nil {
+		return Instance{}, err
+	}
+	if normalizedScope == ScopeGlobal && !s.allowGlobalInstances {
+		return Instance{}, ErrGlobalNotAllowed
+	}
+
 	normalizedConfig, err := validateConfig(normalizedName, config)
 	if err != nil {
 		return Instance{}, err
@@ -79,8 +100,10 @@ func (s *Service) Create(ctx context.Context, tenantID tenant.ID, connectorName 
 
 	instance, err := s.store.CreateConnectorInstance(ctx, Record{
 		ID:            uuid.New(),
-		TenantID:      tenantID,
+		TenantID:      tenantValue,
+		OwnerTenantID: ownerTenantID,
 		ConnectorName: normalizedName,
+		Scope:         normalizedScope,
 		Status:        "enabled",
 		Config:        normalizedConfig,
 		CreatedAt:     s.now(),
@@ -98,6 +121,14 @@ func (s *Service) List(ctx context.Context, tenantID tenant.ID) ([]Instance, err
 	instances, err := s.store.ListConnectorInstances(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list connector instances: %w", err)
+	}
+	return instances, nil
+}
+
+func (s *Service) ListAll(ctx context.Context) ([]Instance, error) {
+	instances, err := s.store.ListAllConnectorInstances(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list all connector instances: %w", err)
 	}
 	return instances, nil
 }
@@ -133,5 +164,25 @@ func validateConfig(connectorName string, config json.RawMessage) (json.RawMessa
 		return normalized, nil
 	default:
 		return nil, ErrUnsupportedConnector
+	}
+}
+
+func normalizeScope(scope string, tenantID *tenant.ID) (string, tenant.ID, *tenant.ID, error) {
+	normalizedScope := strings.TrimSpace(scope)
+	if normalizedScope == "" {
+		normalizedScope = ScopeTenant
+	}
+	switch normalizedScope {
+	case ScopeTenant:
+		if tenantID == nil {
+			return "", tenant.ID{}, nil, ErrInvalidScope
+		}
+		tid := *tenantID
+		return normalizedScope, tid, &tid, nil
+	case ScopeGlobal:
+		globalTenant := tenant.ID(GlobalTenantID)
+		return normalizedScope, globalTenant, nil, nil
+	default:
+		return "", tenant.ID{}, nil, ErrInvalidScope
 	}
 }

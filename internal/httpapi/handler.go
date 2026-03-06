@@ -20,6 +20,7 @@ import (
 	"groot/internal/delivery"
 	"groot/internal/eventquery"
 	"groot/internal/functiondestination"
+	"groot/internal/inboundroute"
 	"groot/internal/ingest"
 	"groot/internal/observability"
 	"groot/internal/stream"
@@ -72,8 +73,15 @@ type SubscriptionService interface {
 }
 
 type ConnectorInstanceService interface {
-	Create(context.Context, tenant.ID, string, json.RawMessage) (connectorinstance.Instance, error)
+	Create(context.Context, *tenant.ID, string, string, json.RawMessage) (connectorinstance.Instance, error)
 	List(context.Context, tenant.ID) ([]connectorinstance.Instance, error)
+	ListAll(context.Context) ([]connectorinstance.Instance, error)
+}
+
+type InboundRouteService interface {
+	Create(context.Context, tenant.ID, string, string, *uuid.UUID) (inboundroute.Route, error)
+	List(context.Context, tenant.ID) ([]inboundroute.Route, error)
+	ListAll(context.Context) ([]inboundroute.Route, error)
 }
 
 type DeliveryService interface {
@@ -100,6 +108,7 @@ type Handler struct {
 	functionSvc      FunctionDestinationService
 	subSvc           SubscriptionService
 	connectorSvc     ConnectorInstanceService
+	inboundRouteSvc  InboundRouteService
 	deliverySvc      DeliveryService
 	resendSvc        ResendService
 	metrics          *observability.Metrics
@@ -119,6 +128,7 @@ type Options struct {
 	Functions          FunctionDestinationService
 	Subs               SubscriptionService
 	ConnectorInstances ConnectorInstanceService
+	InboundRoutes      InboundRouteService
 	Deliveries         DeliveryService
 	Resend             ResendService
 	SystemAPIKey       string
@@ -138,6 +148,7 @@ func NewHandler(opts Options) http.Handler {
 		functionSvc:      opts.Functions,
 		subSvc:           opts.Subs,
 		connectorSvc:     opts.ConnectorInstances,
+		inboundRouteSvc:  opts.InboundRoutes,
 		deliverySvc:      opts.Deliveries,
 		resendSvc:        opts.Resend,
 		metrics:          opts.Metrics,
@@ -173,9 +184,13 @@ func NewHandler(opts Options) http.Handler {
 	var retryDeliveryHandler http.Handler = http.HandlerFunc(handler.retryDelivery)
 	var resendEnableHandler http.Handler = http.HandlerFunc(handler.resendEnable)
 	var resendBootstrapHandler http.Handler = http.HandlerFunc(handler.resendBootstrap)
-	var connectorInstancesHandler http.Handler = http.HandlerFunc(handler.connectorInstances)
+	var connectorInstancesGetHandler http.Handler = http.HandlerFunc(handler.connectorInstances)
+	var connectorInstancesPostHandler http.Handler = http.HandlerFunc(handler.connectorInstances)
+	var inboundRoutesHandler http.Handler = http.HandlerFunc(handler.inboundRoutes)
+	var systemInboundRoutesHandler http.Handler = http.HandlerFunc(handler.systemInboundRoutes)
 	if handler.systemAPIKey != "" {
 		resendBootstrapHandler = handler.requireSystemAuth(resendBootstrapHandler)
+		systemInboundRoutesHandler = handler.requireSystemAuth(systemInboundRoutesHandler)
 	}
 	if handler.authTenantFn != nil {
 		eventsHandler = handler.requireTenantAuth(eventsHandler)
@@ -189,7 +204,8 @@ func NewHandler(opts Options) http.Handler {
 		deliveryHandler = handler.requireTenantAuth(deliveryHandler)
 		retryDeliveryHandler = handler.requireTenantAuth(retryDeliveryHandler)
 		resendEnableHandler = handler.requireTenantAuth(resendEnableHandler)
-		connectorInstancesHandler = handler.requireTenantAuth(connectorInstancesHandler)
+		connectorInstancesGetHandler = handler.requireTenantAuth(connectorInstancesGetHandler)
+		inboundRoutesHandler = handler.requireTenantAuth(inboundRoutesHandler)
 	}
 	mux.Handle("POST /events", eventsHandler)
 	mux.Handle("GET /events", listEventsHandler)
@@ -208,8 +224,11 @@ func NewHandler(opts Options) http.Handler {
 	mux.Handle("POST /deliveries/{delivery_id}/retry", retryDeliveryHandler)
 	mux.Handle("POST /connectors/resend/enable", resendEnableHandler)
 	mux.Handle("POST /system/resend/bootstrap", resendBootstrapHandler)
-	mux.Handle("POST /connector-instances", connectorInstancesHandler)
-	mux.Handle("GET /connector-instances", connectorInstancesHandler)
+	mux.Handle("POST /connector-instances", connectorInstancesPostHandler)
+	mux.Handle("GET /connector-instances", connectorInstancesGetHandler)
+	mux.Handle("POST /routes/inbound", inboundRoutesHandler)
+	mux.Handle("GET /routes/inbound", inboundRoutesHandler)
+	mux.Handle("GET /system/routes/inbound", systemInboundRoutesHandler)
 
 	return mux
 }
@@ -553,6 +572,10 @@ func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusNotFound, "function destination not found")
 			case errors.Is(err, subscription.ErrConnectorInstanceNotFound):
 				writeError(w, http.StatusNotFound, "connector instance not found")
+			case errors.Is(err, subscription.ErrConnectorInstanceForbidden):
+				writeError(w, http.StatusNotFound, "connector instance not found")
+			case errors.Is(err, subscription.ErrGlobalConnectorNotAllowed):
+				writeError(w, http.StatusBadRequest, err.Error())
 			default:
 				h.logger.Error("create subscription", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
 				writeError(w, http.StatusInternalServerError, "failed to create subscription")
@@ -574,11 +597,6 @@ func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) connectorInstances(w http.ResponseWriter, r *http.Request) {
-	tenantID, ok := tenantIDFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
 	if h.connectorSvc == nil {
 		writeError(w, http.StatusNotImplemented, "connector instance service unavailable")
 		return
@@ -588,27 +606,55 @@ func (h *Handler) connectorInstances(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var req struct {
 			ConnectorName string          `json:"connector_name"`
+			Scope         string          `json:"scope"`
 			Config        json.RawMessage `json:"config"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		instance, err := h.connectorSvc.Create(r.Context(), tenantID, req.ConnectorName, req.Config)
+		var tenantID *tenant.ID
+		switch strings.TrimSpace(req.Scope) {
+		case "", connectorinstance.ScopeTenant:
+			resolvedTenantID, ok := tenantIDFromContext(r.Context())
+			if !ok {
+				resolvedTenantID, ok = h.authenticateTenantRequest(r)
+			}
+			if !ok {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+			tenantID = &resolvedTenantID
+		case connectorinstance.ScopeGlobal:
+			if !h.isSystemAuthorized(r) {
+				writeError(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+		default:
+			writeError(w, http.StatusBadRequest, connectorinstance.ErrInvalidScope.Error())
+			return
+		}
+
+		instance, err := h.connectorSvc.Create(r.Context(), tenantID, req.ConnectorName, req.Scope, req.Config)
 		if err != nil {
 			switch {
-			case errors.Is(err, connectorinstance.ErrUnsupportedConnector), errors.Is(err, connectorinstance.ErrInvalidConfig), errors.Is(err, connectorinstance.ErrMissingBotToken):
+			case errors.Is(err, connectorinstance.ErrUnsupportedConnector), errors.Is(err, connectorinstance.ErrInvalidConfig), errors.Is(err, connectorinstance.ErrMissingBotToken), errors.Is(err, connectorinstance.ErrInvalidScope), errors.Is(err, connectorinstance.ErrGlobalNotAllowed):
 				writeError(w, http.StatusBadRequest, err.Error())
 			case errors.Is(err, connectorinstance.ErrDuplicateInstance):
 				writeError(w, http.StatusConflict, err.Error())
 			default:
-				h.logger.Error("create connector instance", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+				h.logger.Error("create connector instance", slog.String("error", err.Error()))
 				writeError(w, http.StatusInternalServerError, "failed to create connector instance")
 			}
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"id": instance.ID.String(), "connector_name": instance.ConnectorName})
+		writeJSON(w, http.StatusOK, map[string]string{"id": instance.ID.String()})
 	case http.MethodGet:
+		tenantID, ok := tenantIDFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
 		instances, err := h.connectorSvc.List(r.Context(), tenantID)
 		if err != nil {
 			h.logger.Error("list connector instances", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
@@ -619,6 +665,80 @@ func (h *Handler) connectorInstances(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
+}
+
+func (h *Handler) inboundRoutes(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.inboundRouteSvc == nil {
+		writeError(w, http.StatusNotImplemented, "inbound route service unavailable")
+		return
+	}
+	switch r.Method {
+	case http.MethodPost:
+		var req struct {
+			ConnectorName       string `json:"connector_name"`
+			RouteKey            string `json:"route_key"`
+			ConnectorInstanceID string `json:"connector_instance_id"`
+		}
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		var connectorInstanceID *uuid.UUID
+		if strings.TrimSpace(req.ConnectorInstanceID) != "" {
+			parsed, err := uuid.Parse(req.ConnectorInstanceID)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, "invalid connector_instance_id")
+				return
+			}
+			connectorInstanceID = &parsed
+		}
+		route, err := h.inboundRouteSvc.Create(r.Context(), tenantID, req.ConnectorName, req.RouteKey, connectorInstanceID)
+		if err != nil {
+			switch {
+			case errors.Is(err, inboundroute.ErrInvalidConnectorName), errors.Is(err, inboundroute.ErrInvalidRouteKey), errors.Is(err, inboundroute.ErrInvalidConnectorInstance):
+				writeError(w, http.StatusBadRequest, err.Error())
+			case errors.Is(err, inboundroute.ErrConnectorInstanceNotFound):
+				writeError(w, http.StatusNotFound, "connector instance not found")
+			case errors.Is(err, inboundroute.ErrDuplicateRoute):
+				writeError(w, http.StatusConflict, err.Error())
+			default:
+				h.logger.Error("create inbound route", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+				writeError(w, http.StatusInternalServerError, "failed to create inbound route")
+			}
+			return
+		}
+		h.logger.Info("inbound_route_created", slog.String("tenant_id", tenantID.String()), slog.String("connector_name", route.ConnectorName), slog.String("route_key", route.RouteKey))
+		writeJSON(w, http.StatusOK, map[string]string{"id": route.ID.String()})
+	case http.MethodGet:
+		routes, err := h.inboundRouteSvc.List(r.Context(), tenantID)
+		if err != nil {
+			h.logger.Error("list inbound routes", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "failed to list inbound routes")
+			return
+		}
+		writeJSON(w, http.StatusOK, routes)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) systemInboundRoutes(w http.ResponseWriter, r *http.Request) {
+	if h.inboundRouteSvc == nil {
+		writeError(w, http.StatusNotImplemented, "inbound route service unavailable")
+		return
+	}
+	routes, err := h.inboundRouteSvc.ListAll(r.Context())
+	if err != nil {
+		h.logger.Error("list system inbound routes", slog.String("error", err.Error()))
+		writeError(w, http.StatusInternalServerError, "failed to list inbound routes")
+		return
+	}
+	writeJSON(w, http.StatusOK, routes)
 }
 
 func (h *Handler) functions(w http.ResponseWriter, r *http.Request) {

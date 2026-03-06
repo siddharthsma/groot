@@ -15,6 +15,7 @@ import (
 	"groot/internal/connectorinstance"
 	"groot/internal/delivery"
 	"groot/internal/functiondestination"
+	"groot/internal/inboundroute"
 	"groot/internal/stream"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
@@ -83,8 +84,8 @@ func (d *DB) CreateTenant(ctx context.Context, record tenant.TenantRecord) (tena
 
 func (d *DB) EnsureConnectorInstance(ctx context.Context, tenantID tenant.ID, connectorName string, createdAt time.Time) error {
 	const query = `
-		INSERT INTO connector_instances (id, tenant_id, connector_name, status, config_json, created_at)
-		VALUES ($1, $2, $3, 'enabled', '{}'::jsonb, $4)
+		INSERT INTO connector_instances (id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at)
+		VALUES ($1, $2, $2, $3, 'tenant', 'enabled', '{}'::jsonb, $4)
 		ON CONFLICT (tenant_id, connector_name) DO NOTHING
 	`
 	if _, err := d.db.ExecContext(ctx, query, uuid.New(), tenantID, connectorName, createdAt); err != nil {
@@ -95,13 +96,14 @@ func (d *DB) EnsureConnectorInstance(ctx context.Context, tenantID tenant.ID, co
 
 func (d *DB) CreateConnectorInstance(ctx context.Context, record connectorinstance.Record) (connectorinstance.Instance, error) {
 	const query = `
-		INSERT INTO connector_instances (id, tenant_id, connector_name, status, config_json, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, tenant_id, connector_name, status, config_json, created_at
+		INSERT INTO connector_instances (id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at
 	`
 	var instance connectorinstance.Instance
-	err := d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.ConnectorName, record.Status, []byte(record.Config), record.CreatedAt).Scan(
-		&instance.ID, &instance.TenantID, &instance.ConnectorName, &instance.Status, &instance.Config, &instance.CreatedAt,
+	err := scanConnectorInstance(
+		d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.OwnerTenantID, record.ConnectorName, record.Scope, record.Status, []byte(record.Config), record.CreatedAt),
+		&instance,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -114,9 +116,9 @@ func (d *DB) CreateConnectorInstance(ctx context.Context, record connectorinstan
 
 func (d *DB) ListConnectorInstances(ctx context.Context, tenantID tenant.ID) ([]connectorinstance.Instance, error) {
 	const query = `
-		SELECT id, tenant_id, connector_name, status, config_json, created_at
+		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at
 		FROM connector_instances
-		WHERE tenant_id = $1
+		WHERE owner_tenant_id = $1 OR scope = 'global'
 		ORDER BY created_at ASC
 	`
 	rows, err := d.db.QueryContext(ctx, query, tenantID)
@@ -128,7 +130,7 @@ func (d *DB) ListConnectorInstances(ctx context.Context, tenantID tenant.ID) ([]
 	var instances []connectorinstance.Instance
 	for rows.Next() {
 		var instance connectorinstance.Instance
-		if err := rows.Scan(&instance.ID, &instance.TenantID, &instance.ConnectorName, &instance.Status, &instance.Config, &instance.CreatedAt); err != nil {
+		if err := scanConnectorInstance(rows, &instance); err != nil {
 			return nil, fmt.Errorf("scan connector instance: %w", err)
 		}
 		instances = append(instances, instance)
@@ -139,16 +141,39 @@ func (d *DB) ListConnectorInstances(ctx context.Context, tenantID tenant.ID) ([]
 	return instances, nil
 }
 
+func (d *DB) ListAllConnectorInstances(ctx context.Context) ([]connectorinstance.Instance, error) {
+	const query = `
+		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at
+		FROM connector_instances
+		ORDER BY created_at ASC
+	`
+	rows, err := d.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query all connector instances: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var instances []connectorinstance.Instance
+	for rows.Next() {
+		var instance connectorinstance.Instance
+		if err := scanConnectorInstance(rows, &instance); err != nil {
+			return nil, fmt.Errorf("scan connector instance: %w", err)
+		}
+		instances = append(instances, instance)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate all connector instances: %w", err)
+	}
+	return instances, nil
+}
+
 func (d *DB) GetConnectorInstance(ctx context.Context, tenantID tenant.ID, id uuid.UUID) (connectorinstance.Instance, error) {
 	const query = `
-		SELECT id, tenant_id, connector_name, status, config_json, created_at
+		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at
 		FROM connector_instances
-		WHERE id = $1 AND tenant_id = $2
+		WHERE id = $1 AND (owner_tenant_id = $2 OR scope = 'global')
 	`
 	var instance connectorinstance.Instance
-	err := d.db.QueryRowContext(ctx, query, id, tenantID).Scan(
-		&instance.ID, &instance.TenantID, &instance.ConnectorName, &instance.Status, &instance.Config, &instance.CreatedAt,
-	)
+	err := scanConnectorInstance(d.db.QueryRowContext(ctx, query, id, tenantID), &instance)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return connectorinstance.Instance{}, connectorinstance.ErrNotFound
@@ -158,51 +183,121 @@ func (d *DB) GetConnectorInstance(ctx context.Context, tenantID tenant.ID, id uu
 	return instance, nil
 }
 
-func (d *DB) GetResendRouteByTenant(ctx context.Context, tenantID tenant.ID) (string, error) {
-	const query = `
-		SELECT token
-		FROM resend_routes
-		WHERE tenant_id = $1
-		ORDER BY created_at ASC
-		LIMIT 1
-	`
-	var token string
-	err := d.db.QueryRowContext(ctx, query, tenantID).Scan(&token)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", sql.ErrNoRows
-		}
-		return "", fmt.Errorf("get resend route by tenant: %w", err)
+func scanConnectorInstance(row scanner, instance *connectorinstance.Instance) error {
+	var ownerTenantID sql.NullString
+	if err := row.Scan(&instance.ID, &instance.TenantID, &ownerTenantID, &instance.ConnectorName, &instance.Scope, &instance.Status, &instance.Config, &instance.CreatedAt); err != nil {
+		return err
 	}
-	return token, nil
-}
-
-func (d *DB) CreateResendRoute(ctx context.Context, tenantID tenant.ID, token string, createdAt time.Time) error {
-	const query = `
-		INSERT INTO resend_routes (id, tenant_id, token, created_at)
-		VALUES ($1, $2, $3, $4)
-	`
-	if _, err := d.db.ExecContext(ctx, query, uuid.New(), tenantID, token, createdAt); err != nil {
-		return fmt.Errorf("create resend route: %w", err)
-	}
+	instance.OwnerTenantID = parseOptionalUUID(ownerTenantID)
 	return nil
 }
 
-func (d *DB) GetResendRouteTenant(ctx context.Context, token string) (tenant.ID, error) {
+func (d *DB) GetInboundRouteByTenant(ctx context.Context, connectorName string, tenantID tenant.ID) (inboundroute.Route, error) {
 	const query = `
-		SELECT tenant_id
-		FROM resend_routes
-		WHERE token = $1
+		SELECT id, connector_name, route_key, tenant_id, connector_instance_id, created_at
+		FROM inbound_routes
+		WHERE connector_name = $1 AND tenant_id = $2
+		ORDER BY created_at ASC
+		LIMIT 1
 	`
-	var tenantID tenant.ID
-	err := d.db.QueryRowContext(ctx, query, token).Scan(&tenantID)
+	var route inboundroute.Route
+	err := d.db.QueryRowContext(ctx, query, connectorName, tenantID).Scan(&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return tenant.ID{}, sql.ErrNoRows
+			return inboundroute.Route{}, sql.ErrNoRows
 		}
-		return tenant.ID{}, fmt.Errorf("get resend route tenant: %w", err)
+		return inboundroute.Route{}, fmt.Errorf("get inbound route by tenant: %w", err)
 	}
-	return tenantID, nil
+	return route, nil
+}
+
+func (d *DB) CreateInboundRoute(ctx context.Context, record inboundroute.Record) (inboundroute.Route, error) {
+	const query = `
+		INSERT INTO inbound_routes (id, connector_name, route_key, tenant_id, connector_instance_id, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		RETURNING id, connector_name, route_key, tenant_id, connector_instance_id, created_at
+	`
+	var route inboundroute.Route
+	err := d.db.QueryRowContext(ctx, query, record.ID, record.ConnectorName, record.RouteKey, record.TenantID, record.ConnectorInstanceID, record.CreatedAt).Scan(
+		&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt,
+	)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return inboundroute.Route{}, inboundroute.ErrDuplicateRoute
+		}
+		return inboundroute.Route{}, fmt.Errorf("create inbound route: %w", err)
+	}
+	return route, nil
+}
+
+func (d *DB) GetInboundRoute(ctx context.Context, connectorName, routeKey string) (inboundroute.Route, error) {
+	const query = `
+		SELECT id, connector_name, route_key, tenant_id, connector_instance_id, created_at
+		FROM inbound_routes
+		WHERE connector_name = $1 AND route_key = $2
+	`
+	var route inboundroute.Route
+	err := d.db.QueryRowContext(ctx, query, connectorName, routeKey).Scan(
+		&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return inboundroute.Route{}, sql.ErrNoRows
+		}
+		return inboundroute.Route{}, fmt.Errorf("get inbound route: %w", err)
+	}
+	return route, nil
+}
+
+func (d *DB) ListInboundRoutes(ctx context.Context, tenantID tenant.ID) ([]inboundroute.Route, error) {
+	const query = `
+		SELECT id, connector_name, route_key, tenant_id, connector_instance_id, created_at
+		FROM inbound_routes
+		WHERE tenant_id = $1
+		ORDER BY created_at ASC
+	`
+	rows, err := d.db.QueryContext(ctx, query, tenantID)
+	if err != nil {
+		return nil, fmt.Errorf("query inbound routes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var routes []inboundroute.Route
+	for rows.Next() {
+		var route inboundroute.Route
+		if err := rows.Scan(&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan inbound route: %w", err)
+		}
+		routes = append(routes, route)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate inbound routes: %w", err)
+	}
+	return routes, nil
+}
+
+func (d *DB) ListAllInboundRoutes(ctx context.Context) ([]inboundroute.Route, error) {
+	const query = `
+		SELECT id, connector_name, route_key, tenant_id, connector_instance_id, created_at
+		FROM inbound_routes
+		ORDER BY created_at ASC
+	`
+	rows, err := d.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query all inbound routes: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var routes []inboundroute.Route
+	for rows.Next() {
+		var route inboundroute.Route
+		if err := rows.Scan(&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan inbound route: %w", err)
+		}
+		routes = append(routes, route)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate all inbound routes: %w", err)
+	}
+	return routes, nil
 }
 
 func (d *DB) GetSystemSetting(ctx context.Context, key string) (string, error) {
@@ -239,6 +334,7 @@ func (d *DB) ListTenants(ctx context.Context) ([]tenant.Tenant, error) {
 	const query = `
 		SELECT id, name, created_at
 		FROM tenants
+		WHERE id <> '00000000-0000-0000-0000-000000000000'
 		ORDER BY created_at ASC
 	`
 

@@ -20,6 +20,7 @@ func TestLoad(t *testing.T) {
 	t.Setenv("RESEND_API_BASE_URL", "http://127.0.0.1:18090")
 	t.Setenv("RESEND_WEBHOOK_EVENTS", "email.received,email.delivered")
 	t.Setenv("SLACK_API_BASE_URL", "http://127.0.0.1:18091")
+	t.Setenv("GROOT_ALLOW_GLOBAL_INSTANCES", "false")
 
 	cfg, err := Load()
 	if err != nil {
@@ -43,6 +44,9 @@ func TestLoad(t *testing.T) {
 	}
 	if got, want := cfg.SlackAPIBaseURL, "http://127.0.0.1:18091"; got != want {
 		t.Fatalf("SlackAPIBaseURL = %q, want %q", got, want)
+	}
+	if got, want := cfg.AllowGlobalInstances, false; got != want {
+		t.Fatalf("AllowGlobalInstances = %t, want %t", got, want)
 	}
 }
 

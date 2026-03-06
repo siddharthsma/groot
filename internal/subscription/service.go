@@ -56,6 +56,8 @@ var (
 	ErrConnectorInstanceNotFound   = errors.New("connector instance not found")
 	ErrInvalidOperation            = errors.New("operation is required for connector subscriptions")
 	ErrInvalidOperationParams      = errors.New("operation_params are invalid")
+	ErrGlobalConnectorNotAllowed   = errors.New("global connector instances are disabled")
+	ErrConnectorInstanceForbidden  = errors.New("connector instance does not belong to tenant")
 )
 
 const (
@@ -90,15 +92,17 @@ type Service struct {
 	connectedApps        ConnectedAppStore
 	functionDestinations FunctionDestinationStore
 	connectorInstances   ConnectorInstanceStore
+	allowGlobalInstances bool
 	now                  func() time.Time
 }
 
-func NewService(store Store, connectedApps ConnectedAppStore, functionDestinations FunctionDestinationStore, connectorInstances ConnectorInstanceStore) *Service {
+func NewService(store Store, connectedApps ConnectedAppStore, functionDestinations FunctionDestinationStore, connectorInstances ConnectorInstanceStore, allowGlobalInstances bool) *Service {
 	return &Service{
 		store:                store,
 		connectedApps:        connectedApps,
 		functionDestinations: functionDestinations,
 		connectorInstances:   connectorInstances,
+		allowGlobalInstances: allowGlobalInstances,
 		now:                  func() time.Time { return time.Now().UTC() },
 	}
 }
@@ -141,6 +145,14 @@ func (s *Service) Create(ctx context.Context, tenantID tenant.ID, destinationTyp
 				return Subscription{}, ErrConnectorInstanceNotFound
 			}
 			return Subscription{}, fmt.Errorf("get connector instance: %w", err)
+		}
+		if instance.Scope == connectorinstance.ScopeTenant {
+			if instance.OwnerTenantID == nil || *instance.OwnerTenantID != uuid.UUID(tenantID) {
+				return Subscription{}, ErrConnectorInstanceForbidden
+			}
+		}
+		if instance.Scope == connectorinstance.ScopeGlobal && !s.allowGlobalInstances {
+			return Subscription{}, ErrGlobalConnectorNotAllowed
 		}
 		normalizedOperation := normalizeOperation(operation)
 		if normalizedOperation == nil {

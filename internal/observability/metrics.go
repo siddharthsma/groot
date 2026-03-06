@@ -30,6 +30,9 @@ type Metrics struct {
 	connectorDeliveries         map[string]uint64
 	connectorDeliveryFailures   map[string]uint64
 	connectorDeliveryDeadLetter map[string]uint64
+	inboundRoutes               map[string]uint64
+	inboundUnroutable           map[string]uint64
+	globalConnectorDeliveries   map[string]uint64
 }
 
 func NewMetrics() *Metrics {
@@ -37,6 +40,9 @@ func NewMetrics() *Metrics {
 		connectorDeliveries:         make(map[string]uint64),
 		connectorDeliveryFailures:   make(map[string]uint64),
 		connectorDeliveryDeadLetter: make(map[string]uint64),
+		inboundRoutes:               make(map[string]uint64),
+		inboundUnroutable:           make(map[string]uint64),
+		globalConnectorDeliveries:   make(map[string]uint64),
 	}
 }
 
@@ -71,6 +77,18 @@ func (m *Metrics) IncConnectorDeliveryDeadLetter(connector, operation string) {
 	m.incLabelled(m.connectorDeliveryDeadLetter, connector, operation)
 }
 
+func (m *Metrics) IncInboundRoutes(connector string) {
+	m.incLabelled(m.inboundRoutes, connector, "")
+}
+
+func (m *Metrics) IncInboundUnroutable(connector string) {
+	m.incLabelled(m.inboundUnroutable, connector, "")
+}
+
+func (m *Metrics) IncGlobalConnectorDeliveries(connector, operation string) {
+	m.incLabelled(m.globalConnectorDeliveries, connector, operation)
+}
+
 func (m *Metrics) Prometheus() string {
 	lines := []string{
 		fmt.Sprintf("groot_events_received_total %d", m.eventsReceived.Load()),
@@ -93,6 +111,9 @@ func (m *Metrics) Prometheus() string {
 	lines = append(lines, m.labelledPrometheus("groot_connector_deliveries_total", m.snapshot(m.connectorDeliveries))...)
 	lines = append(lines, m.labelledPrometheus("groot_connector_delivery_failures_total", m.snapshot(m.connectorDeliveryFailures))...)
 	lines = append(lines, m.labelledPrometheus("groot_connector_delivery_dead_letter_total", m.snapshot(m.connectorDeliveryDeadLetter))...)
+	lines = append(lines, m.labelledPrometheus("groot_inbound_routes_total", m.snapshot(m.inboundRoutes))...)
+	lines = append(lines, m.labelledPrometheus("groot_inbound_unroutable_total", m.snapshot(m.inboundUnroutable))...)
+	lines = append(lines, m.labelledPrometheus("groot_global_connector_deliveries_total", m.snapshot(m.globalConnectorDeliveries))...)
 	return strings.Join(lines, "\n") + "\n"
 }
 

@@ -35,6 +35,21 @@ func tenantIDFromContext(ctx context.Context) (tenant.ID, bool) {
 	return id, ok
 }
 
+func (h *Handler) authenticateTenantRequest(r *http.Request) (tenant.ID, bool) {
+	if h.authTenantFn == nil {
+		return tenant.ID{}, false
+	}
+	apiKey := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if apiKey == "" || !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") {
+		return tenant.ID{}, false
+	}
+	record, err := h.authTenantFn(r.Context(), apiKey)
+	if err != nil {
+		return tenant.ID{}, false
+	}
+	return record.ID, true
+}
+
 func (h *Handler) requireSystemAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiKey := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
@@ -46,4 +61,9 @@ func (h *Handler) requireSystemAuth(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), systemContextKey{}, true)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func (h *Handler) isSystemAuthorized(r *http.Request) bool {
+	apiKey := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	return apiKey != "" && strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") && apiKey == h.systemAPIKey
 }

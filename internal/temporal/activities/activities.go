@@ -70,6 +70,7 @@ type Metrics interface {
 	IncConnectorDeliveries(string, string)
 	IncConnectorDeliveryFailures(string, string)
 	IncConnectorDeliveryDeadLetter(string, string)
+	IncGlobalConnectorDeliveries(string, string)
 }
 
 type DeliveryJob struct {
@@ -104,6 +105,7 @@ type FunctionDestination struct {
 type ConnectorInstance struct {
 	ID            string
 	ConnectorName string
+	Scope         string
 	Config        json.RawMessage
 }
 
@@ -228,6 +230,7 @@ func (a *Activities) LoadConnectorInstance(ctx context.Context, connectorInstanc
 	return ConnectorInstance{
 		ID:            instance.ID.String(),
 		ConnectorName: instance.ConnectorName,
+		Scope:         instance.Scope,
 		Config:        instance.Config,
 	}, nil
 }
@@ -385,6 +388,9 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 	}
 	if a.metrics != nil {
 		a.metrics.IncConnectorDeliveries(connectorInstance.ConnectorName, operation)
+		if connectorInstance.Scope == connectorinstance.ScopeGlobal {
+			a.metrics.IncGlobalConnectorDeliveries(connectorInstance.ConnectorName, operation)
+		}
 	}
 
 	eventID, err := uuid.Parse(event.EventID)

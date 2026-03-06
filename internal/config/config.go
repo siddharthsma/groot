@@ -9,15 +9,16 @@ import (
 )
 
 type Config struct {
-	HTTPAddr          string
-	PostgresDSN       string
-	KafkaBrokers      []string
-	TemporalAddress   string
-	TemporalNamespace string
-	DeliveryRetry     DeliveryRetryConfig
-	SystemAPIKey      string
-	Resend            ResendConfig
-	SlackAPIBaseURL   string
+	HTTPAddr             string
+	PostgresDSN          string
+	KafkaBrokers         []string
+	TemporalAddress      string
+	TemporalNamespace    string
+	DeliveryRetry        DeliveryRetryConfig
+	AllowGlobalInstances bool
+	SystemAPIKey         string
+	Resend               ResendConfig
+	SlackAPIBaseURL      string
 }
 
 type DeliveryRetryConfig struct {
@@ -63,6 +64,7 @@ func Load() (Config, error) {
 	if cfg.SystemAPIKey, err = requiredEnv("GROOT_SYSTEM_API_KEY"); err != nil {
 		return Config{}, err
 	}
+	cfg.AllowGlobalInstances = boolEnv("GROOT_ALLOW_GLOBAL_INSTANCES", true)
 	if cfg.DeliveryRetry, err = loadDeliveryRetryConfig(); err != nil {
 		return Config{}, err
 	}
@@ -75,6 +77,21 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func boolEnv(name string, fallback bool) bool {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return fallback
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func requiredEnv(name string) (string, error) {

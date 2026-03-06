@@ -62,7 +62,7 @@ func (s stubConnectorInstances) GetConnectorInstance(ctx context.Context, tenant
 }
 
 func TestCreateRequiresEventType(t *testing.T) {
-	svc := NewService(stubStore{}, stubApps{}, stubFunctions{}, stubConnectorInstances{})
+	svc := NewService(stubStore{}, stubApps{}, stubFunctions{}, stubConnectorInstances{}, true)
 	appID := uuid.New()
 	_, err := svc.Create(context.Background(), tenant.ID{}, DestinationTypeWebhook, &appID, nil, nil, nil, nil, " ", nil)
 	if !errors.Is(err, ErrInvalidEventType) {
@@ -81,7 +81,7 @@ func TestPause(t *testing.T) {
 			}
 			return Subscription{ID: subscriptionID, Status: StatusPaused}, nil
 		},
-	}, stubApps{}, stubFunctions{}, stubConnectorInstances{})
+	}, stubApps{}, stubFunctions{}, stubConnectorInstances{}, true)
 
 	sub, err := svc.Pause(context.Background(), tenantID, subscriptionID)
 	if err != nil {
@@ -113,7 +113,7 @@ func TestCreateFunctionSubscription(t *testing.T) {
 			}
 			return functiondestination.Destination{ID: functionID}, nil
 		},
-	}, stubConnectorInstances{})
+	}, stubConnectorInstances{}, true)
 
 	sub, err := svc.Create(context.Background(), tenantID, DestinationTypeFunction, nil, &functionID, nil, nil, nil, "example.event", nil)
 	if err != nil {
@@ -148,10 +148,12 @@ func TestCreateConnectorSubscription(t *testing.T) {
 			return connectorinstance.Instance{
 				ID:            connectorID,
 				ConnectorName: connectorinstance.ConnectorNameSlack,
+				Scope:         connectorinstance.ScopeTenant,
+				OwnerTenantID: ptrUUID(uuid.UUID(tenantID)),
 				Config:        json.RawMessage(`{"bot_token":"xoxb-123","default_channel":"#alerts"}`),
 			}, nil
 		},
-	})
+	}, true)
 
 	sub, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, params, "resend.email.received", nil)
 	if err != nil {
@@ -160,4 +162,30 @@ func TestCreateConnectorSubscription(t *testing.T) {
 	if sub.DestinationType != DestinationTypeConnector {
 		t.Fatalf("sub.DestinationType = %q", sub.DestinationType)
 	}
+}
+
+func TestCreateRejectsGlobalConnectorWhenDisabled(t *testing.T) {
+	connectorID := uuid.New()
+	tenantID := tenant.ID(uuid.New())
+	operation := "post_message"
+
+	svc := NewService(stubStore{}, stubApps{}, stubFunctions{}, stubConnectorInstances{
+		getFn: func(context.Context, tenant.ID, uuid.UUID) (connectorinstance.Instance, error) {
+			return connectorinstance.Instance{
+				ID:            connectorID,
+				ConnectorName: connectorinstance.ConnectorNameSlack,
+				Scope:         connectorinstance.ScopeGlobal,
+				Config:        json.RawMessage(`{"bot_token":"xoxb-123","default_channel":"#alerts"}`),
+			}, nil
+		},
+	}, false)
+
+	_, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, json.RawMessage(`{"text":"hello"}`), "example.event", nil)
+	if !errors.Is(err, ErrGlobalConnectorNotAllowed) {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func ptrUUID(value uuid.UUID) *uuid.UUID {
+	return &value
 }

@@ -19,6 +19,7 @@ import (
 
 	"groot/internal/config"
 	"groot/internal/connectors"
+	"groot/internal/inboundroute"
 	"groot/internal/ingest"
 	"groot/internal/stream"
 	"groot/internal/tenant"
@@ -36,9 +37,9 @@ var _ connectors.Inbound = (*Service)(nil)
 
 type Store interface {
 	EnsureConnectorInstance(context.Context, tenant.ID, string, time.Time) error
-	GetResendRouteByTenant(context.Context, tenant.ID) (string, error)
-	CreateResendRoute(context.Context, tenant.ID, string, time.Time) error
-	GetResendRouteTenant(context.Context, string) (tenant.ID, error)
+	GetInboundRouteByTenant(context.Context, string, tenant.ID) (inboundroute.Route, error)
+	CreateInboundRoute(context.Context, inboundroute.Record) (inboundroute.Route, error)
+	GetInboundRoute(context.Context, string, string) (inboundroute.Route, error)
 	GetSystemSetting(context.Context, string) (string, error)
 	UpsertSystemSetting(context.Context, string, string) error
 }
@@ -53,6 +54,8 @@ type Metrics interface {
 	IncResendWebhooksVerificationFailed()
 	IncResendUnroutable()
 	IncResendEventsPublished()
+	IncInboundRoutes(string)
+	IncInboundUnroutable(string)
 }
 
 type HTTPClient interface {
@@ -171,19 +174,32 @@ func (s *Service) Enable(ctx context.Context, tenantID tenant.ID) (EnableResult,
 		return EnableResult{}, fmt.Errorf("ensure connector instance: %w", err)
 	}
 
-	token, err := s.store.GetResendRouteByTenant(ctx, tenantID)
+	route, err := s.store.GetInboundRouteByTenant(ctx, ConnectorName, tenantID)
 	switch {
 	case err == nil:
 	case errors.Is(err, sql.ErrNoRows):
-		token = uuid.NewString()
-		if err := s.store.CreateResendRoute(ctx, tenantID, token, s.now()); err != nil {
-			return EnableResult{}, fmt.Errorf("create resend route: %w", err)
+		token := uuid.NewString()
+		route, err = s.store.CreateInboundRoute(ctx, inboundroute.Record{
+			ID:            uuid.New(),
+			ConnectorName: ConnectorName,
+			RouteKey:      token,
+			TenantID:      tenantID,
+			CreatedAt:     s.now(),
+		})
+		if err != nil {
+			return EnableResult{}, fmt.Errorf("create inbound route: %w", err)
+		}
+		if s.metrics != nil {
+			s.metrics.IncInboundRoutes(ConnectorName)
+		}
+		if s.logger != nil {
+			s.logger.Info("inbound_route_created", slog.String("connector_name", ConnectorName), slog.String("route_key", route.RouteKey), slog.String("tenant_id", tenantID.String()))
 		}
 	default:
-		return EnableResult{}, fmt.Errorf("get resend route: %w", err)
+		return EnableResult{}, fmt.Errorf("get inbound route: %w", err)
 	}
 
-	address := fmt.Sprintf("inbound+%s@%s", token, s.cfg.ReceivingDomain)
+	address := fmt.Sprintf("inbound+%s@%s", route.RouteKey, s.cfg.ReceivingDomain)
 	if s.logger != nil {
 		s.logger.Info("resend_connector_enabled", slog.String("tenant_id", tenantID.String()))
 	}
@@ -230,26 +246,33 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, headers htt
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Info("resend_unroutable", slog.String("error", err.Error()))
+			s.logger.Info("inbound_route_missing", slog.String("connector_name", ConnectorName))
 		}
 		if s.metrics != nil {
 			s.metrics.IncResendUnroutable()
+			s.metrics.IncInboundUnroutable(ConnectorName)
 		}
 		return nil
 	}
 
-	tenantID, err := s.store.GetResendRouteTenant(ctx, token)
+	route, err := s.store.GetInboundRoute(ctx, ConnectorName, token)
 	if err != nil {
 		if s.logger != nil {
 			s.logger.Info("resend_unroutable", slog.String("token", token))
+			s.logger.Info("inbound_route_missing", slog.String("connector_name", ConnectorName), slog.String("route_key", token))
 		}
 		if s.metrics != nil {
 			s.metrics.IncResendUnroutable()
+			s.metrics.IncInboundUnroutable(ConnectorName)
 		}
 		return nil
 	}
+	if s.logger != nil {
+		s.logger.Info("inbound_route_resolved", slog.String("connector_name", ConnectorName), slog.String("route_key", token), slog.String("tenant_id", route.TenantID.String()))
+	}
 
 	event, err := s.ingest.Ingest(ctx, ingest.Request{
-		TenantID: tenantID,
+		TenantID: tenant.ID(route.TenantID),
 		Type:     EventTypeEmailReceived,
 		Source:   EventSourceResend,
 		Payload:  json.RawMessage(rawBody),
@@ -261,8 +284,9 @@ func (s *Service) HandleWebhook(ctx context.Context, rawBody []byte, headers htt
 		s.metrics.IncResendEventsPublished()
 	}
 	if s.logger != nil {
+		resolvedTenantID := tenant.ID(route.TenantID)
 		s.logger.Info("resend_event_published",
-			slog.String("tenant_id", tenantID.String()),
+			slog.String("tenant_id", resolvedTenantID.String()),
 			slog.String("event_id", event.EventID.String()),
 		)
 	}

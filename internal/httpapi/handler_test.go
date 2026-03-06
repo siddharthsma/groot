@@ -21,6 +21,7 @@ import (
 	"groot/internal/delivery"
 	"groot/internal/eventquery"
 	"groot/internal/functiondestination"
+	"groot/internal/inboundroute"
 	"groot/internal/ingest"
 	"groot/internal/observability"
 	"groot/internal/stream"
@@ -143,16 +144,39 @@ type stubDeliveryService struct {
 }
 
 type stubConnectorInstanceService struct {
-	createFn func(context.Context, tenant.ID, string, json.RawMessage) (connectorinstance.Instance, error)
-	listFn   func(context.Context, tenant.ID) ([]connectorinstance.Instance, error)
+	createFn  func(context.Context, *tenant.ID, string, string, json.RawMessage) (connectorinstance.Instance, error)
+	listFn    func(context.Context, tenant.ID) ([]connectorinstance.Instance, error)
+	listAllFn func(context.Context) ([]connectorinstance.Instance, error)
 }
 
-func (s stubConnectorInstanceService) Create(ctx context.Context, tenantID tenant.ID, connectorName string, config json.RawMessage) (connectorinstance.Instance, error) {
-	return s.createFn(ctx, tenantID, connectorName, config)
+func (s stubConnectorInstanceService) Create(ctx context.Context, tenantID *tenant.ID, connectorName string, scope string, config json.RawMessage) (connectorinstance.Instance, error) {
+	return s.createFn(ctx, tenantID, connectorName, scope, config)
 }
 
 func (s stubConnectorInstanceService) List(ctx context.Context, tenantID tenant.ID) ([]connectorinstance.Instance, error) {
 	return s.listFn(ctx, tenantID)
+}
+
+func (s stubConnectorInstanceService) ListAll(ctx context.Context) ([]connectorinstance.Instance, error) {
+	return s.listAllFn(ctx)
+}
+
+type stubInboundRouteService struct {
+	createFn  func(context.Context, tenant.ID, string, string, *uuid.UUID) (inboundroute.Route, error)
+	listFn    func(context.Context, tenant.ID) ([]inboundroute.Route, error)
+	listAllFn func(context.Context) ([]inboundroute.Route, error)
+}
+
+func (s stubInboundRouteService) Create(ctx context.Context, tenantID tenant.ID, connectorName, routeKey string, connectorInstanceID *uuid.UUID) (inboundroute.Route, error) {
+	return s.createFn(ctx, tenantID, connectorName, routeKey, connectorInstanceID)
+}
+
+func (s stubInboundRouteService) List(ctx context.Context, tenantID tenant.ID) ([]inboundroute.Route, error) {
+	return s.listFn(ctx, tenantID)
+}
+
+func (s stubInboundRouteService) ListAll(ctx context.Context) ([]inboundroute.Route, error) {
+	return s.listAllFn(ctx)
 }
 
 type stubResendService struct {
@@ -477,11 +501,11 @@ func TestCreateConnectorInstance(t *testing.T) {
 			authenticateFn: func(context.Context, string) (tenant.Tenant, error) { return tenant.Tenant{ID: tenantID}, nil },
 		},
 		ConnectorInstances: stubConnectorInstanceService{
-			createFn: func(_ context.Context, gotTenantID tenant.ID, connectorName string, config json.RawMessage) (connectorinstance.Instance, error) {
-				if gotTenantID != tenantID || connectorName != "slack" || !strings.Contains(string(config), "xoxb-test") {
+			createFn: func(_ context.Context, gotTenantID *tenant.ID, connectorName string, scope string, config json.RawMessage) (connectorinstance.Instance, error) {
+				if gotTenantID == nil || *gotTenantID != tenantID || connectorName != "slack" || scope != "" || !strings.Contains(string(config), "xoxb-test") {
 					t.Fatal("unexpected connector instance args")
 				}
-				return connectorinstance.Instance{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), ConnectorName: connectorName}, nil
+				return connectorinstance.Instance{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), ConnectorName: connectorName, Scope: connectorinstance.ScopeTenant}, nil
 			},
 		},
 	})
