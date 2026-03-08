@@ -82,16 +82,7 @@ func DefaultBundles() []Bundle {
 				resultSpec("llm", "classify", 1, false, nil),
 				resultSpec("llm", "extract", 1, true, objectSchema(map[string]any{}, true)),
 				resultSpec("llm", "extract", 1, false, nil),
-				resultSpec("llm", "agent", 1, true, objectSchema(map[string]any{
-					"output": objectSchema(map[string]any{}, true),
-					"tool_calls": map[string]any{
-						"type": "array",
-						"items": objectSchema(map[string]any{
-							"tool": stringSchema(),
-							"ok":   map[string]any{"type": "boolean"},
-						}, false),
-					},
-				}, false)),
+				resultSpec("llm", "agent", 1, true, objectSchema(map[string]any{}, true)),
 				resultSpec("llm", "agent", 1, false, nil),
 			},
 		},
@@ -151,6 +142,20 @@ func resultSpec(connector, operation string, version int, success bool, outputSc
 		eventType = connector + "." + operation + ".completed"
 		statusValue = "succeeded"
 		properties["status"] = enumStringSchema(statusValue)
+		if connector == "llm" && operation == "agent" {
+			properties["agent_id"] = stringSchema()
+			properties["agent_session_id"] = stringSchema()
+			properties["session_key"] = stringSchema()
+			properties["tool_calls"] = map[string]any{
+				"type": "array",
+				"items": objectSchema(map[string]any{
+					"tool": stringSchema(),
+					"ok":   map[string]any{"type": "boolean"},
+				}, false),
+			}
+			required = append(required, "agent_id", "agent_session_id", "session_key")
+			required = append(required, "tool_calls")
+		}
 		if outputSchema != nil {
 			properties["output"] = outputSchema
 		}
@@ -160,6 +165,12 @@ func resultSpec(connector, operation string, version int, success bool, outputSc
 			"type":    stringSchema(),
 		}, false)
 		required = append(required, "error")
+		if connector == "llm" && operation == "agent" {
+			properties["agent_id"] = nullableStringSchema()
+			properties["agent_session_id"] = nullableStringSchema()
+			properties["session_key"] = nullableStringSchema()
+			required = append(required, "agent_id")
+		}
 	}
 	body, _ := json.Marshal(map[string]any{
 		"type":                 "object",

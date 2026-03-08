@@ -1,0 +1,170 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: groot
+      POSTGRES_PASSWORD: groot
+      POSTGRES_DB: groot
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U groot -d groot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: confluentinc/cp-kafka:7.8.0
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENERS: PLAINTEXT://:19092,PLAINTEXT_HOST://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:${KAFKA_PORT:-9092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    ports:
+      - "${KAFKA_PORT:-9092}:9092"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  temporal:
+    image: temporalio/auto-setup:1.27.2
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12
+      DB_PORT: "5432"
+      POSTGRES_USER: groot
+      POSTGRES_PWD: groot
+      POSTGRES_SEEDS: postgres
+    ports:
+      - "7233:7233"
+
+  temporal-ui:
+    image: temporalio/ui:2.34.0
+    depends_on:
+      - temporal
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    ports:
+      - "${TEMPORAL_UI_PORT:-8233}:8080"
+
+  groot-agent-runtime:
+    image: python:3.12-alpine
+    command:
+      - python
+      - -c
+      - |
+        import json
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                if self.path != "/sessions/run":
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                length = int(self.headers.get("Content-Length", "0"))
+                if length:
+                    self.rfile.read(length)
+                body = json.dumps({
+                    "status": "failed",
+                    "error": {"message": "community compose runtime stub: configure a real agent runtime"}
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            def log_message(self, format, *args):
+                return
+        HTTPServer(("0.0.0.0", 8090), Handler).serve_forever()
+    ports:
+      - "${GROOT_AGENT_RUNTIME_PORT:-8090}:8090"
+
+  groot-api:
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+      groot-agent-runtime:
+        condition: service_started
+    environment:
+      GROOT_EDITION: community
+      GROOT_TENANCY_MODE: single
+      COMMUNITY_TENANT_NAME: ${COMMUNITY_TENANT_NAME}
+      GROOT_HTTP_ADDR: :8080
+      POSTGRES_DSN: postgres://groot:groot@postgres:5432/groot?sslmode=disable
+      KAFKA_BROKERS: kafka:19092
+      ROUTER_CONSUMER_GROUP: groot-community-router
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      GROOT_SYSTEM_API_KEY: ${GROOT_SYSTEM_API_KEY}
+      AUTH_MODE: api_key
+      API_KEY_HEADER: X-API-Key
+      ADMIN_MODE_ENABLED: false
+      AUDIT_ENABLED: true
+      GROOT_ALLOW_GLOBAL_INSTANCES: true
+      MAX_CHAIN_DEPTH: 10
+      MAX_REPLAY_EVENTS: 1000
+      MAX_REPLAY_WINDOW_HOURS: 24
+      SCHEMA_VALIDATION_MODE: warn
+      SCHEMA_REGISTRATION_MODE: startup
+      SCHEMA_MAX_PAYLOAD_BYTES: 262144
+      GRAPH_MAX_NODES: 5000
+      GRAPH_MAX_EDGES: 20000
+      GRAPH_EXECUTION_TRAVERSAL_MAX_EVENTS: 500
+      GRAPH_EXECUTION_MAX_DEPTH: 25
+      GRAPH_DEFAULT_LIMIT: 500
+      STRIPE_WEBHOOK_TOLERANCE_SECONDS: 300
+      RESEND_API_KEY: ${RESEND_API_KEY}
+      RESEND_API_BASE_URL: https://api.resend.com
+      RESEND_WEBHOOK_PUBLIC_URL: ${RESEND_WEBHOOK_PUBLIC_URL}
+      RESEND_RECEIVING_DOMAIN: ${RESEND_RECEIVING_DOMAIN}
+      RESEND_WEBHOOK_EVENTS: email.received
+      SLACK_API_BASE_URL: https://slack.com/api
+      SLACK_SIGNING_SECRET: ${SLACK_SIGNING_SECRET}
+      NOTION_API_BASE_URL: https://api.notion.com/v1
+      NOTION_API_VERSION: 2022-06-28
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_API_BASE_URL: https://api.openai.com/v1
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      ANTHROPIC_API_BASE_URL: https://api.anthropic.com
+      LLM_DEFAULT_PROVIDER: openai
+      LLM_DEFAULT_CLASSIFY_MODEL: gpt-4o-mini
+      LLM_DEFAULT_EXTRACT_MODEL: gpt-4o-mini
+      LLM_TIMEOUT_SECONDS: 30
+      AGENT_MAX_STEPS: 8
+      AGENT_STEP_TIMEOUT_SECONDS: 30
+      AGENT_TOTAL_TIMEOUT_SECONDS: 120
+      AGENT_MAX_TOOL_CALLS: 8
+      AGENT_MAX_TOOL_OUTPUT_BYTES: 16384
+      AGENT_RUNTIME_ENABLED: true
+      AGENT_RUNTIME_BASE_URL: http://groot-agent-runtime:8090
+      AGENT_RUNTIME_TIMEOUT_SECONDS: 30
+      AGENT_SESSION_AUTO_CREATE: true
+      AGENT_SESSION_MAX_IDLE_DAYS: 30
+      AGENT_MEMORY_MODE: runtime_managed
+      AGENT_MEMORY_SUMMARY_MAX_BYTES: 16384
+      AGENT_RUNTIME_SHARED_SECRET: ${AGENT_RUNTIME_SHARED_SECRET}
+      DELIVERY_MAX_ATTEMPTS: 10
+      DELIVERY_INITIAL_INTERVAL: 2s
+      DELIVERY_MAX_INTERVAL: 5m
+    ports:
+      - "${GROOT_HTTP_PORT:-8080}:8080"

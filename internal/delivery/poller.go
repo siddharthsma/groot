@@ -35,7 +35,7 @@ type Poller struct {
 	client  WorkflowStarter
 	logger  *slog.Logger
 	retry   config.DeliveryRetryConfig
-	agent   config.AgentConfig
+	agent   config.AgentRuntimeConfig
 	metrics Metrics
 	ticker  func(time.Duration) ticker
 }
@@ -53,7 +53,7 @@ type realTicker struct{ *time.Ticker }
 
 func (t realTicker) C() <-chan time.Time { return t.Ticker.C }
 
-func NewPoller(store Store, temporalClient WorkflowStarter, logger *slog.Logger, retry config.DeliveryRetryConfig, agent config.AgentConfig, metrics Metrics) *Poller {
+func NewPoller(store Store, temporalClient WorkflowStarter, logger *slog.Logger, retry config.DeliveryRetryConfig, agent config.AgentRuntimeConfig, metrics Metrics) *Poller {
 	return &Poller{
 		store:   store,
 		client:  temporalClient,

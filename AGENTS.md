@@ -25,6 +25,16 @@ Core technologies:
 - Temporal
 - Docker
 
+Deployment modes:
+- Cloud Edition: multi-tenant managed deployments
+- Community Edition: single-tenant self-hosted deployments
+- Internal Edition: multi-tenant private deployments
+
+Edition trust boundaries:
+- Official builds may embed a build-time edition.
+- Runtime `.env` may narrow behavior but must not elevate edition capabilities.
+- License handling must not log raw license payloads, signatures, or keys.
+
 ---
 
 # Core Principles

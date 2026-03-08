@@ -38,12 +38,15 @@ type Metrics interface {
 	IncSubscriptionFilterRejections()
 }
 
-func NewConsumer(brokers []string, store Store, logger *slog.Logger, metrics Metrics) *Consumer {
+func NewConsumer(brokers []string, groupID string, store Store, logger *slog.Logger, metrics Metrics) *Consumer {
+	if groupID == "" {
+		groupID = "groot-router"
+	}
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
 			Brokers: brokers,
 			Topic:   stream.EventsTopic,
-			GroupID: "groot-router",
+			GroupID: groupID,
 		}),
 		store:   store,
 		logger:  logger,

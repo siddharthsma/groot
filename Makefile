@@ -2,6 +2,7 @@ GO_RUN_ENV = \
 	GROOT_HTTP_ADDR=$${GROOT_HTTP_ADDR:-:8081} \
 	POSTGRES_DSN=$${POSTGRES_DSN:-postgres://groot:groot@localhost:5432/groot?sslmode=disable} \
 	KAFKA_BROKERS=$${KAFKA_BROKERS:-localhost:9092} \
+	ROUTER_CONSUMER_GROUP=$${ROUTER_CONSUMER_GROUP:-groot-router} \
 	TEMPORAL_ADDRESS=$${TEMPORAL_ADDRESS:-localhost:7233} \
 	TEMPORAL_NAMESPACE=$${TEMPORAL_NAMESPACE:-default} \
 	GROOT_SYSTEM_API_KEY=$${GROOT_SYSTEM_API_KEY:-system-secret} \
@@ -12,6 +13,11 @@ GO_RUN_ENV = \
 	SCHEMA_VALIDATION_MODE=$${SCHEMA_VALIDATION_MODE:-warn} \
 	SCHEMA_REGISTRATION_MODE=$${SCHEMA_REGISTRATION_MODE:-startup} \
 	SCHEMA_MAX_PAYLOAD_BYTES=$${SCHEMA_MAX_PAYLOAD_BYTES:-262144} \
+	GRAPH_MAX_NODES=$${GRAPH_MAX_NODES:-5000} \
+	GRAPH_MAX_EDGES=$${GRAPH_MAX_EDGES:-20000} \
+	GRAPH_EXECUTION_TRAVERSAL_MAX_EVENTS=$${GRAPH_EXECUTION_TRAVERSAL_MAX_EVENTS:-500} \
+	GRAPH_EXECUTION_MAX_DEPTH=$${GRAPH_EXECUTION_MAX_DEPTH:-25} \
+	GRAPH_DEFAULT_LIMIT=$${GRAPH_DEFAULT_LIMIT:-500} \
 	STRIPE_WEBHOOK_TOLERANCE_SECONDS=$${STRIPE_WEBHOOK_TOLERANCE_SECONDS:-300} \
 	RESEND_API_KEY=$${RESEND_API_KEY:-re_test} \
 	RESEND_API_BASE_URL=$${RESEND_API_BASE_URL:-https://api.resend.com} \
@@ -39,7 +45,9 @@ GO_RUN_ENV = \
 	DELIVERY_INITIAL_INTERVAL=$${DELIVERY_INITIAL_INTERVAL:-2s} \
 	DELIVERY_MAX_INTERVAL=$${DELIVERY_MAX_INTERVAL:-5m}
 
-.PHONY: up down logs build run test lint fmt health migrate checkpoint
+INTEGRATION_TEST_FLAGS = -tags=integration -count=1 -p 1 ./tests/integration
+
+.PHONY: up down logs build run test lint fmt health migrate checkpoint checkpoint-fast checkpoint-integration checkpoint-reset checkpoint-audit
 
 up:
 	docker compose up -d --build
@@ -71,4 +79,24 @@ health:
 migrate:
 	for f in $$(find migrations -type f -name '*.sql' | sort); do docker compose exec -T postgres psql -U groot -d groot < "$$f"; done
 
-checkpoint: fmt lint test
+checkpoint-fast: fmt lint test
+
+checkpoint-integration:
+	@set -e; \
+	docker compose stop groot-api >/dev/null 2>&1 || true; \
+	trap 'docker compose start groot-api >/dev/null 2>&1 || true' EXIT; \
+	go test $(INTEGRATION_TEST_FLAGS) -run 'TestScenario|TestAPIKeyAndJWTAuthFlows'
+
+checkpoint-reset:
+	@set -e; \
+	docker compose stop groot-api >/dev/null 2>&1 || true; \
+	trap 'docker compose start groot-api >/dev/null 2>&1 || true' EXIT; \
+	go test $(INTEGRATION_TEST_FLAGS) -run '^TestCheckpointReset$$'
+
+checkpoint-audit:
+	@set -e; \
+	docker compose stop groot-api >/dev/null 2>&1 || true; \
+	trap 'docker compose start groot-api >/dev/null 2>&1 || true' EXIT; \
+	go test $(INTEGRATION_TEST_FLAGS) -run '^TestPhase20Audit$$'
+
+checkpoint: checkpoint-fast checkpoint-integration checkpoint-audit

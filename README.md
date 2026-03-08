@@ -1,6 +1,12 @@
 # Groot
 
-Groot is a multi-tenant event hub. Phase 19 adds operator graph APIs on top of the Phase 18 admin/operator surface so the system can expose both topology and per-event execution graphs.
+Groot is an event hub that now supports three runtime editions from the same codebase:
+
+- Community Edition: single-tenant self-hosted deployments
+- Cloud Edition: multi-tenant hosted deployments
+- Internal Edition: multi-tenant private deployments
+
+Phase 22 adds edition enforcement, Community bootstrap-tenant guardrails, and distribution packaging alongside the Phase 20 checkpoint harness.
 
 ## Stack
 
@@ -22,15 +28,32 @@ curl localhost:8081/healthz
 
 `make run` starts the API on the host and automatically uses `localhost` endpoints for PostgreSQL, Kafka, and Temporal unless you override them in the environment.
 
+## Deployment Modes
+
+- `GROOT_EDITION=internal` with `GROOT_TENANCY_MODE=multi` is the default local development posture.
+- `GROOT_EDITION=community` requires `GROOT_TENANCY_MODE=single` and auto-creates one bootstrap tenant on startup using `COMMUNITY_TENANT_NAME`.
+- `GROOT_EDITION=cloud` defaults to `GROOT_TENANCY_MODE=multi`.
+- Official builds also embed a build-time edition. `.env` may narrow runtime behavior, but it does not control edition trust boundaries.
+
+Community Edition blocks tenant-management routes like `POST /tenants`, `GET /tenants`, and cross-tenant `/admin/*` APIs with `403 community_edition_restriction`.
+
 ## Environment Variables
 
 The service reads all runtime configuration from environment variables.
 
 | Variable | Purpose | Example |
 | --- | --- | --- |
+| `GROOT_EDITION` | Runtime edition: `community`, `cloud`, or `internal` | `internal` |
+| `GROOT_TENANCY_MODE` | Tenancy enforcement mode: `single` or `multi` | `multi` |
+| `COMMUNITY_TENANT_NAME` | Bootstrap tenant name used only in Community Edition startup | `Community Tenant` |
+| `GROOT_LICENSE_PATH` | Optional path to a signed license JSON file | unset |
+| `GROOT_LICENSE_REQUIRED` | Fail startup if no license file is present | `false` |
+| `GROOT_LICENSE_PUBLIC_KEY_PATH` | Optional override path for the Ed25519 license verification public key | unset |
+| `GROOT_LICENSE_ENFORCE_SIGNATURE` | Verify the signature on any provided license file | `true` |
 | `GROOT_HTTP_ADDR` | HTTP listen address | `:8081` |
 | `POSTGRES_DSN` | PostgreSQL connection string | `postgres://groot:groot@postgres:5432/groot?sslmode=disable` |
 | `KAFKA_BROKERS` | Comma-separated Kafka brokers | `kafka:19092` |
+| `ROUTER_CONSUMER_GROUP` | Kafka consumer group used by the in-process router | `groot-router` |
 | `TEMPORAL_ADDRESS` | Temporal frontend address | `temporal:7233` |
 | `TEMPORAL_NAMESPACE` | Temporal namespace | `default` |
 | `GROOT_SYSTEM_API_KEY` | Bearer token for system-only endpoints | `system-secret` |
@@ -93,11 +116,54 @@ The service reads all runtime configuration from environment variables.
 | `AGENT_TOTAL_TIMEOUT_SECONDS` | Total timeout for one agent child workflow execution | `120` |
 | `AGENT_MAX_TOOL_CALLS` | Maximum tool calls an agent may execute in one run | `8` |
 | `AGENT_MAX_TOOL_OUTPUT_BYTES` | Maximum serialized bytes accepted from one tool result | `16384` |
+| `AGENT_RUNTIME_ENABLED` | Enable external runtime-backed `llm.agent` execution | `true` |
+| `AGENT_RUNTIME_BASE_URL` | Base URL for the external agent runtime service | `http://localhost:8090` |
+| `AGENT_RUNTIME_TIMEOUT_SECONDS` | Timeout for one runtime `/sessions/run` call | `30` |
+| `AGENT_SESSION_AUTO_CREATE` | Default system posture for agent session auto-creation | `true` |
+| `AGENT_SESSION_MAX_IDLE_DAYS` | Maximum idle days retained in agent session metadata | `30` |
+| `AGENT_MEMORY_MODE` | Phase 21 memory mode | `runtime_managed` |
+| `AGENT_MEMORY_SUMMARY_MAX_BYTES` | Maximum stored session summary size accepted from the runtime | `16384` |
+| `AGENT_RUNTIME_SHARED_SECRET` | Bearer secret required by `POST /internal/agent-runtime/tool-calls` | `agent-runtime-secret` |
 | `DELIVERY_MAX_ATTEMPTS` | Workflow retry attempt limit for outbound delivery | `10` |
 | `DELIVERY_INITIAL_INTERVAL` | Initial Temporal retry interval | `2s` |
 | `DELIVERY_MAX_INTERVAL` | Maximum Temporal retry interval | `5m` |
 
 `RESEND_API_BASE_URL` is optional and defaults to `https://api.resend.com`. It is useful for local bootstrap mocking.
+
+## Edition Locking And License Validation
+
+Phase 22 addendum adds build-time edition locking. Official binaries are built with `-ldflags "-X main.BuildEdition=<edition>"`, and startup rejects a mismatched `GROOT_EDITION`.
+
+Edition resolution precedence is:
+
+1. build edition
+2. signed license claims, if present
+3. runtime narrowing such as `GROOT_TENANCY_MODE`
+
+Runtime configuration may narrow behavior, but it may not elevate behavior. A Community build cannot be turned into a multi-tenant Cloud-like build by changing `.env`.
+
+License files use a signed JSON envelope:
+
+```json
+{
+  "payload": {
+    "edition": "community",
+    "max_tenants": 1
+  },
+  "signature": "base64..."
+}
+```
+
+The signature is verified with Ed25519 over the canonical JSON bytes of `payload` only. `/system/edition` exposes only safe metadata such as `build_edition`, `effective_edition`, `tenancy_mode`, `license.present`, `licensee`, and `max_tenants`.
+
+Local reproducible build helpers live in:
+
+- [build/community/README.md](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/build/community/README.md)
+- [build/cloud/README.md](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/build/cloud/README.md)
+- [build/internal/README.md](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/build/internal/README.md)
+- [build-community.sh](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/scripts/build-community.sh)
+- [build-cloud.sh](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/scripts/build-cloud.sh)
+- [build-internal.sh](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/scripts/build-internal.sh)
 
 ## Services and Ports
 
@@ -120,10 +186,17 @@ The service reads all runtime configuration from environment variables.
 - `make health`: call `GET /healthz`
 - `make migrate`: apply SQL migrations to the local PostgreSQL container
 - `make migrate` is intended to be safely rerunnable against an already-migrated local database
-- `make checkpoint`: run `fmt`, `lint`, and `test`
+- `make checkpoint-fast`: run `fmt`, `lint`, and `test`
+- `make checkpoint-integration`: stop the compose `groot-api` service, run tagged Phase 20 integration scenarios against a test-owned API process, then restart the compose API
+- `make checkpoint-reset`: reset the local PostgreSQL schema from migrations and remove generated audit artifacts
+- `make checkpoint-audit`: run the tagged Phase 20 audit checks and overwrite `artifacts/phase20_audit_report.md`
+- `make checkpoint`: run `checkpoint-fast`, `checkpoint-integration`, and `checkpoint-audit`
 - `migrations/015_agents.sql` adds internal `agent_runs` and `agent_steps` audit tables used by `llm.agent`
+- `migrations/021_agent_sessions.sql` adds tenant-scoped `agents`, `agent_sessions`, `agent_session_events`, `subscriptions.agent_id`, `subscriptions.session_key_template`, `subscriptions.session_create_if_missing`, and `agent_runs.agent_id` / `agent_runs.agent_session_id`
 - `migrations/016_subscription_filters.sql` adds `subscriptions.filter_json` and a GIN index for payload-based subscription filters
 - `migrations/017_auth_and_audit.sql` adds `api_keys`, `audit_events`, and actor metadata columns on core write tables
+
+Phase 20 integration tests live under `tests/integration` and use local Go mock servers for Slack, Notion, Resend, LLM, function destinations, and JWKS. They assume PostgreSQL, Kafka, and Temporal are already running via `make up`.
 
 ## API Endpoints
 
@@ -132,11 +205,12 @@ The service reads all runtime configuration from environment variables.
 - `GET /health/router`: checks PostgreSQL and Kafka for the router
 - `GET /health/delivery`: checks PostgreSQL and Temporal for the delivery worker
 - `GET /metrics`: exposes in-memory Prometheus-style counters
+- `GET /system/edition`: unauthenticated edition, license, and capability report
 - `GET /schemas`: list registered event schemas
 - `GET /schemas/{full_name}`: fetch one registered event schema body
-- `POST /tenants`: create a tenant and return the generated API key once
-- `GET /tenants`: list tenants
-- `GET /tenants/{tenant_id}`: fetch one tenant
+- `POST /tenants`: create a tenant and return the generated API key once; Community Edition returns `403 community_edition_restriction`
+- `GET /tenants`: list tenants; Community Edition returns `403 community_edition_restriction`
+- `GET /tenants/{tenant_id}`: fetch one tenant; Community Edition returns `403 community_edition_restriction`
 - `POST /api-keys`: create a tenant-scoped API key and return it once
 - `GET /api-keys`: list tenant API keys
 - `POST /api-keys/{api_key_id}/revoke`: revoke a tenant API key
@@ -150,10 +224,12 @@ The service reads all runtime configuration from environment variables.
 - `DELETE /functions/{function_id}`: delete a function destination if no active function subscription references it
 - `POST /connector-instances`: create a tenant connector instance such as Slack
 - `GET /connector-instances`: list tenant-owned and global connector instances without secrets
+- `POST /agents`, `GET /agents`, `GET /agents/{agent_id}`, `PUT /agents/{agent_id}`, `DELETE /agents/{agent_id}`: manage tenant-scoped agent definitions used by `llm.agent`
+- `GET /agent-sessions`, `GET /agent-sessions/{session_id}`, `POST /agent-sessions/{session_id}/close`: inspect and close persistent agent sessions
 - `POST /routes/inbound`: create a tenant inbound route
 - `GET /routes/inbound`: list tenant inbound routes
 - `GET /system/routes/inbound`: system-authenticated list of all inbound routes
-- `POST /subscriptions`: create a webhook, function, or connector subscription for the authenticated tenant, with optional `emit_success_event`, `emit_failure_event`, and `filter`; responses may include `warnings`
+- `POST /subscriptions`: create a webhook, function, or connector subscription for the authenticated tenant, with optional `emit_success_event`, `emit_failure_event`, and `filter`; `llm.agent` subscriptions also require `agent_id` and `session_key_template`; responses may include `warnings`
 - `GET /subscriptions`: list subscriptions for the authenticated tenant
 - `PUT /subscriptions/{subscription_id}`: full replacement update for a tenant subscription, including `filter`
 - `POST /subscriptions/{subscription_id}/pause`: pause a tenant subscription
@@ -169,7 +245,7 @@ The service reads all runtime configuration from environment variables.
 - `POST /webhooks/slack/events`: inbound Slack Events API endpoint with HMAC verification and `url_verification` challenge support
 - `POST /connectors/stripe/enable`: tenant-authenticated Stripe connector enablement
 - `POST /webhooks/stripe`: inbound Stripe webhook endpoint with Stripe signature verification
-- `GET /admin/tenants`, `POST /admin/tenants`, `GET /admin/tenants/{tenant_id}`, `PATCH /admin/tenants/{tenant_id}`: operator-only tenant management when `ADMIN_MODE_ENABLED=true`
+- `GET /admin/tenants`, `POST /admin/tenants`, `GET /admin/tenants/{tenant_id}`, `PATCH /admin/tenants/{tenant_id}`: operator-only tenant management when `ADMIN_MODE_ENABLED=true`; Community Edition returns `403 community_edition_restriction`
 - `POST /admin/tenants/{tenant_id}/api-keys`, `GET /admin/tenants/{tenant_id}/api-keys`, `POST /admin/tenants/{tenant_id}/api-keys/{api_key_id}/revoke`: operator-only tenant API key management
 - `GET /admin/connector-instances`, `PUT /admin/connector-instances/{id}`: operator-only connector inspection and upsert
 - `GET /admin/subscriptions`, `POST /admin/tenants/{tenant_id}/subscriptions`: operator-only cross-tenant subscription APIs
@@ -181,7 +257,10 @@ When admin mode is enabled, `/admin/*` responses include `X-Request-Id`. When `A
 
 Graph API responses never include event payload bodies. Topology returns connector, event type, and subscription nodes. Execution graphs return event and delivery job nodes, mark traversal-cap results as `partial`, and return `graph_too_large` when node or edge limits are exceeded.
 
-`llm.agent` is configured through `POST /subscriptions`; Phase 15 does not add tenant-facing APIs for `agent_runs` or `agent_steps`.
+Phase 21 moves `llm.agent` tool inventory and prompt defaults onto tenant-scoped `agents`. Subscriptions now reference an `agent_id` plus a `session_key_template`, while the actual agent loop runs through the external runtime at `AGENT_RUNTIME_BASE_URL`. Tenant-facing APIs for `agent_runs` and `agent_steps` are still not exposed.
+
+Phase 22 stores the Community bootstrap tenant id in `system_settings.community_bootstrap_tenant_id`. Community startup fails if more than one tenant exists.
+Phase 22 addendum also enforces build-embedded edition locking and optional signed licenses. Community restrictions still apply only to Community Edition. Cloud/Internal builds with a license `max_tenants=1` are restricted operationally by tenant count, not by blanket Community-style `403` responses.
 
 Subscription filters use JSON with `all`, `any`, `not`, or condition objects like `{"path":"payload.amount","op":">=","value":100}`. Phase 16 supports `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `in`, and `exists` on `payload.*` object paths only.
 
@@ -193,6 +272,28 @@ Create a tenant:
 curl -X POST localhost:8081/tenants \
   -H 'Content-Type: application/json' \
   -d '{"name":"example"}'
+```
+
+Check the active edition:
+
+```sh
+curl localhost:8081/system/edition
+```
+
+## Community Compose
+
+Community Edition packaging lives in [deploy/docker-compose/community](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/deploy/docker-compose/community/README.md). It exposes:
+
+- API on `8080`
+- agent runtime on `8090`
+- Temporal UI on `8233`
+
+Quickstart:
+
+```sh
+cd deploy/docker-compose/community
+cp .env.example .env
+docker compose up --build
 ```
 
 Publish an event with the returned API key:
@@ -286,10 +387,15 @@ curl -X POST localhost:8081/subscriptions \
   -H 'Authorization: Bearer <api_key>' \
   -d '{"destination_type":"connector","connector_instance_id":"<llm_connector_id>","operation":"generate","operation_params":{"prompt":"Summarize {{payload.text}}","provider":"openai"},"event_type":"example.event.v1","event_source":"manual","emit_success_event":true}'
 
+curl -X POST localhost:8081/agents \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <api_key>' \
+  -d '{"name":"support_agent","instructions":"Handle inbound support emails, notify Slack, and escalate when needed","provider":"openai","model":"gpt-4o-mini","allowed_tools":["slack.post_message","notify_support"],"tool_bindings":{"notify_support":{"type":"function","function_destination_id":"<function_id>"}}}'
+
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<llm_connector_id>","operation":"agent","operation_params":{"instructions":"Handle inbound support emails, notify Slack, and escalate when needed","allowed_tools":["slack.post_message","notify_support"],"tool_bindings":{"notify_support":{"type":"function","function_destination_id":"<function_id>"}},"provider":"openai","max_steps":6},"event_type":"resend.email.received.v1","event_source":"resend","emit_success_event":true,"emit_failure_event":true}'
+  -d '{"destination_type":"connector","connector_instance_id":"<llm_connector_id>","agent_id":"<agent_id>","session_key_template":"resend:thread:{{payload.headers.in_reply_to}}","session_create_if_missing":true,"operation":"agent","operation_params":{},"event_type":"resend.email.received.v1","event_source":"resend","emit_success_event":true,"emit_failure_event":true}'
 ```
 
 Create a global Resend connector and use `send_email`:

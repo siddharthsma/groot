@@ -20,6 +20,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 
 	"groot/internal/agent"
+	agentruntime "groot/internal/agent/runtime"
 	"groot/internal/config"
 	"groot/internal/connectedapp"
 	"groot/internal/connectorinstance"
@@ -33,6 +34,7 @@ import (
 	"groot/internal/functiondestination"
 	"groot/internal/stream"
 	"groot/internal/subscription"
+	"groot/internal/tenant"
 )
 
 const DeliverHTTPName = "deliver_http"
@@ -47,6 +49,7 @@ const (
 
 type Dependencies struct {
 	Store            Store
+	AgentManager     AgentManager
 	HTTPClient       *http.Client
 	Slack            config.SlackConfig
 	Resend           config.ResendConfig
@@ -56,6 +59,8 @@ type Dependencies struct {
 	ResultEmitter    *resultevents.Emitter
 	Metrics          Metrics
 	Logger           *slog.Logger
+	AgentRuntime     *agentruntime.Client
+	AgentRuntimeCfg  config.AgentRuntimeConfig
 }
 
 type Store interface {
@@ -78,13 +83,24 @@ type Store interface {
 	MarkAgentRunFailed(context.Context, uuid.UUID, int, time.Time, string) error
 }
 
+type AgentManager interface {
+	Get(context.Context, tenant.ID, uuid.UUID) (agent.Definition, error)
+	ResolveSession(context.Context, tenant.ID, uuid.UUID, string, bool) (agent.Session, bool, error)
+	LinkEvent(context.Context, uuid.UUID, uuid.UUID) error
+	UpdateSessionAfterRun(context.Context, uuid.UUID, *string, uuid.UUID) (agent.Session, error)
+	SetRunContext(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) error
+}
+
 type Activities struct {
-	store         Store
-	httpClient    *http.Client
-	connectors    map[string]outbound.Connector
-	resultEmitter *resultevents.Emitter
-	metrics       Metrics
-	logger        *slog.Logger
+	store           Store
+	httpClient      *http.Client
+	connectors      map[string]outbound.Connector
+	resultEmitter   *resultevents.Emitter
+	metrics         Metrics
+	logger          *slog.Logger
+	agentRuntime    *agentruntime.Client
+	agentRuntimeCfg config.AgentRuntimeConfig
+	agentManager    AgentManager
 }
 
 type Metrics interface {
@@ -122,15 +138,18 @@ type DeliveryJob struct {
 }
 
 type Subscription struct {
-	ID                    string
-	DestinationType       string
-	ConnectedAppID        string
-	FunctionDestinationID string
-	ConnectorInstanceID   string
-	Operation             string
-	OperationParams       json.RawMessage
-	EmitSuccessEvent      bool
-	EmitFailureEvent      bool
+	ID                     string
+	DestinationType        string
+	ConnectedAppID         string
+	FunctionDestinationID  string
+	ConnectorInstanceID    string
+	AgentID                string
+	SessionKeyTemplate     string
+	SessionCreateIfMissing bool
+	Operation              string
+	OperationParams        json.RawMessage
+	EmitSuccessEvent       bool
+	EmitFailureEvent       bool
 }
 
 type ConnectedApp struct {
@@ -192,8 +211,12 @@ type ResultEventRequest struct {
 	ExternalID            *string
 	HTTPStatusCode        *int
 	Output                json.RawMessage
+	ToolCalls             json.RawMessage
 	ErrorMessage          string
 	ErrorType             string
+	AgentID               string
+	AgentSessionID        string
+	SessionKey            string
 }
 
 type activityFailureDetails struct {
@@ -214,12 +237,15 @@ func New(deps Dependencies) *Activities {
 		llmconnector.ConnectorName:    llmconnector.New(deps.LLM, client),
 	}
 	return &Activities{
-		store:         deps.Store,
-		httpClient:    client,
-		connectors:    connectors,
-		resultEmitter: deps.ResultEmitter,
-		metrics:       deps.Metrics,
-		logger:        deps.Logger,
+		store:           deps.Store,
+		httpClient:      client,
+		connectors:      connectors,
+		resultEmitter:   deps.ResultEmitter,
+		metrics:         deps.Metrics,
+		logger:          deps.Logger,
+		agentRuntime:    deps.AgentRuntime,
+		agentRuntimeCfg: deps.AgentRuntimeCfg,
+		agentManager:    deps.AgentManager,
 	}
 }
 
@@ -251,15 +277,18 @@ func (a *Activities) LoadSubscription(ctx context.Context, subscriptionID string
 		return Subscription{}, err
 	}
 	return Subscription{
-		ID:                    sub.ID.String(),
-		DestinationType:       sub.DestinationType,
-		ConnectedAppID:        optionalUUIDString(sub.ConnectedAppID),
-		FunctionDestinationID: optionalUUIDString(sub.FunctionDestinationID),
-		ConnectorInstanceID:   optionalUUIDString(sub.ConnectorInstanceID),
-		Operation:             optionalString(sub.Operation),
-		OperationParams:       sub.OperationParams,
-		EmitSuccessEvent:      sub.EmitSuccessEvent,
-		EmitFailureEvent:      sub.EmitFailureEvent,
+		ID:                     sub.ID.String(),
+		DestinationType:        sub.DestinationType,
+		ConnectedAppID:         optionalUUIDString(sub.ConnectedAppID),
+		FunctionDestinationID:  optionalUUIDString(sub.FunctionDestinationID),
+		ConnectorInstanceID:    optionalUUIDString(sub.ConnectorInstanceID),
+		AgentID:                optionalUUIDString(sub.AgentID),
+		SessionKeyTemplate:     optionalString(sub.SessionKeyTemplate),
+		SessionCreateIfMissing: sub.SessionCreateIfMissing,
+		Operation:              optionalString(sub.Operation),
+		OperationParams:        sub.OperationParams,
+		EmitSuccessEvent:       sub.EmitSuccessEvent,
+		EmitFailureEvent:       sub.EmitFailureEvent,
 	}, nil
 }
 
@@ -710,6 +739,13 @@ func (a *Activities) EmitResultEvent(ctx context.Context, req ResultEventRequest
 			return nil
 		}
 	}
+	var toolCalls []map[string]any
+	if len(req.ToolCalls) > 0 {
+		if err := json.Unmarshal(req.ToolCalls, &toolCalls); err != nil {
+			a.logResultEmitterFailure(fmt.Errorf("decode result tool calls: %w", err))
+			return nil
+		}
+	}
 	eventID, err := uuid.Parse(req.InputEvent.EventID)
 	if err != nil {
 		a.logResultEmitterFailure(fmt.Errorf("parse event id: %w", err))
@@ -746,12 +782,16 @@ func (a *Activities) EmitResultEvent(ctx context.Context, req ResultEventRequest
 			Timestamp:  req.InputEvent.Timestamp,
 			Payload:    req.InputEvent.Payload,
 		},
-		Connector:  req.ConnectorName,
-		Operation:  req.Operation,
-		Status:     req.Status,
-		Output:     output,
-		ExternalID: req.ExternalID,
-		HTTPStatus: req.HTTPStatusCode,
+		Connector:      req.ConnectorName,
+		Operation:      req.Operation,
+		Status:         req.Status,
+		Output:         output,
+		ToolCalls:      toolCalls,
+		ExternalID:     req.ExternalID,
+		HTTPStatus:     req.HTTPStatusCode,
+		AgentID:        optionalParsedUUID(req.AgentID),
+		AgentSessionID: optionalParsedUUID(req.AgentSessionID),
+		SessionKey:     strings.TrimSpace(req.SessionKey),
 	}
 	if strings.TrimSpace(req.ErrorMessage) != "" {
 		emitReq.Error = &resultevents.ResultError{Message: req.ErrorMessage, Type: strings.TrimSpace(req.ErrorType)}
@@ -863,6 +903,17 @@ func optionalString(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func optionalParsedUUID(value string) *uuid.UUID {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	id, err := uuid.Parse(value)
+	if err != nil {
+		return nil
+	}
+	return &id
 }
 
 func renderOperationParams(raw json.RawMessage, event Event) json.RawMessage {

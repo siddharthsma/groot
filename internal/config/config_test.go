@@ -5,9 +5,12 @@ import (
 )
 
 func TestLoad(t *testing.T) {
+	t.Setenv("GROOT_EDITION", "internal")
+	t.Setenv("GROOT_TENANCY_MODE", "multi")
 	t.Setenv("GROOT_HTTP_ADDR", ":8081")
 	t.Setenv("POSTGRES_DSN", "postgres://groot:groot@postgres:5432/groot?sslmode=disable")
 	t.Setenv("KAFKA_BROKERS", "kafka:19092,kafka-2:19092")
+	t.Setenv("ROUTER_CONSUMER_GROUP", "phase20-router")
 	t.Setenv("TEMPORAL_ADDRESS", "temporal:7233")
 	t.Setenv("TEMPORAL_NAMESPACE", "default")
 	t.Setenv("GROOT_SYSTEM_API_KEY", "system-secret")
@@ -57,8 +60,20 @@ func TestLoad(t *testing.T) {
 	if got, want := cfg.HTTPAddr, ":8081"; got != want {
 		t.Fatalf("HTTPAddr = %q, want %q", got, want)
 	}
+	if got, want := string(cfg.Edition.BuildEdition), "internal"; got != want {
+		t.Fatalf("Edition.BuildEdition = %q, want %q", got, want)
+	}
+	if got, want := string(cfg.Edition.TenancyMode), "multi"; got != want {
+		t.Fatalf("Edition.TenancyMode = %q, want %q", got, want)
+	}
+	if got, want := cfg.License.EnforceSignature, true; got != want {
+		t.Fatalf("License.EnforceSignature = %t, want %t", got, want)
+	}
 	if got, want := len(cfg.KafkaBrokers), 2; got != want {
 		t.Fatalf("len(KafkaBrokers) = %d, want %d", got, want)
+	}
+	if got, want := cfg.RouterConsumerGroup, "phase20-router"; got != want {
+		t.Fatalf("RouterConsumerGroup = %q, want %q", got, want)
 	}
 	if got, want := cfg.DeliveryRetry.MaxAttempts, 3; got != want {
 		t.Fatalf("DeliveryRetry.MaxAttempts = %d, want %d", got, want)
@@ -164,6 +179,24 @@ func TestLoad(t *testing.T) {
 	}
 	if got, want := cfg.Graph.DefaultLimit, 321; got != want {
 		t.Fatalf("Graph.DefaultLimit = %d, want %d", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidEditionTenancy(t *testing.T) {
+	t.Setenv("GROOT_EDITION", "community")
+	t.Setenv("GROOT_TENANCY_MODE", "multi")
+	t.Setenv("GROOT_HTTP_ADDR", ":8081")
+	t.Setenv("POSTGRES_DSN", "postgres://groot:groot@postgres:5432/groot?sslmode=disable")
+	t.Setenv("KAFKA_BROKERS", "kafka:19092")
+	t.Setenv("TEMPORAL_ADDRESS", "temporal:7233")
+	t.Setenv("TEMPORAL_NAMESPACE", "default")
+	t.Setenv("GROOT_SYSTEM_API_KEY", "system-secret")
+	t.Setenv("RESEND_API_KEY", "re_test")
+	t.Setenv("RESEND_WEBHOOK_PUBLIC_URL", "https://example.com/webhooks/resend")
+	t.Setenv("RESEND_RECEIVING_DOMAIN", "example.resend.app")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want error")
 	}
 }
 

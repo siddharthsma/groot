@@ -23,6 +23,7 @@ import (
 	stripeconnector "groot/internal/connectors/inbound/stripe"
 	"groot/internal/connectors/resend"
 	"groot/internal/delivery"
+	"groot/internal/edition"
 	"groot/internal/eventquery"
 	"groot/internal/functiondestination"
 	"groot/internal/graph"
@@ -186,20 +187,20 @@ func (s stubConnectedAppService) Get(ctx context.Context, tenantID tenant.ID, ap
 }
 
 type stubSubscriptionService struct {
-	createFn    func(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
-	updateFn    func(context.Context, tenant.ID, uuid.UUID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
+	createFn    func(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, bool, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
+	updateFn    func(context.Context, tenant.ID, uuid.UUID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, bool, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
 	listFn      func(context.Context, tenant.ID) ([]subscription.Subscription, error)
 	adminListFn func(context.Context, *tenant.ID, string, string) ([]subscription.Subscription, error)
 	pauseFn     func(context.Context, tenant.ID, uuid.UUID) (subscription.Subscription, error)
 	resumeFn    func(context.Context, tenant.ID, uuid.UUID) (subscription.Subscription, error)
 }
 
-func (s stubSubscriptionService) Create(ctx context.Context, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (subscription.Result, error) {
-	return s.createFn(ctx, tenantID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
+func (s stubSubscriptionService) Create(ctx context.Context, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (subscription.Result, error) {
+	return s.createFn(ctx, tenantID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, agentID, sessionKeyTemplate, sessionCreateIfMissing, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
 }
 
-func (s stubSubscriptionService) Update(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (subscription.Result, error) {
-	return s.updateFn(ctx, tenantID, subscriptionID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
+func (s stubSubscriptionService) Update(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (subscription.Result, error) {
+	return s.updateFn(ctx, tenantID, subscriptionID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, agentID, sessionKeyTemplate, sessionCreateIfMissing, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
 }
 
 func (s stubSubscriptionService) List(ctx context.Context, tenantID tenant.ID) ([]subscription.Subscription, error) {
@@ -421,6 +422,16 @@ func TestCreateTenant(t *testing.T) {
 
 	handler := NewHandler(Options{
 		Logger: testLogger(),
+		Edition: edition.Runtime{
+			BuildEdition:     edition.EditionInternal,
+			EffectiveEdition: edition.EditionInternal,
+			TenancyMode:      edition.TenancyMulti,
+			Capabilities: edition.Capabilities{
+				MultiTenant:           true,
+				CrossTenantAdmin:      true,
+				TenantCreationAllowed: true,
+			},
+		},
 		Tenants: stubTenantService{
 			createFn: func(context.Context, string) (tenant.CreatedTenant, error) {
 				return tenant.CreatedTenant{
@@ -482,6 +493,74 @@ func TestGetTenantNotFound(t *testing.T) {
 
 	if got, want := rec.Code, http.StatusNotFound; got != want {
 		t.Fatalf("status = %d, want %d", got, want)
+	}
+}
+
+func TestCommunityEditionRestrictsTenants(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/tenants", bytes.NewBufferString(`{"name":"example"}`))
+	rec := httptest.NewRecorder()
+
+	handler := NewHandler(Options{
+		Logger:  testLogger(),
+		Edition: edition.Runtime{BuildEdition: edition.EditionCommunity, EffectiveEdition: edition.EditionCommunity, TenancyMode: edition.TenancySingle},
+		Tenants: stubTenantService{
+			createFn: func(context.Context, string) (tenant.CreatedTenant, error) {
+				t.Fatal("unexpected create tenant call")
+				return tenant.CreatedTenant{}, nil
+			},
+		},
+	})
+
+	handler.ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusForbidden; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+	if !strings.Contains(rec.Body.String(), "community_edition_restriction") {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestSystemEdition(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/system/edition", nil)
+	rec := httptest.NewRecorder()
+
+	handler := NewHandler(Options{
+		Logger: testLogger(),
+		Edition: edition.Runtime{
+			BuildEdition:     edition.EditionCommunity,
+			EffectiveEdition: edition.EditionCommunity,
+			TenancyMode:      edition.TenancySingle,
+			Capabilities: edition.Capabilities{
+				MultiTenant:           false,
+				CrossTenantAdmin:      false,
+				TenantCreationAllowed: false,
+			},
+			License: edition.LicenseState{
+				Present:    true,
+				Valid:      true,
+				Licensee:   "Acme Ltd",
+				MaxTenants: 1,
+			},
+		},
+	})
+
+	handler.ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusOK; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+	if !strings.Contains(rec.Body.String(), `"build_edition":"community"`) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"effective_edition":"community"`) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"tenancy_mode":"single"`) {
+		t.Fatalf("body = %q", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"license":{"present":true,"valid":true,"licensee":"Acme Ltd","max_tenants":1}`) {
+		t.Fatalf("body = %q", rec.Body.String())
 	}
 }
 
@@ -586,7 +665,7 @@ func TestCreateSubscriptionAppNotFound(t *testing.T) {
 			authenticateFn: func(context.Context, string) (tenant.Tenant, error) { return tenant.Tenant{ID: tenantID}, nil },
 		},
 		Subs: stubSubscriptionService{
-			createFn: func(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error) {
+			createFn: func(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, bool, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error) {
 				return subscription.Result{}, subscription.ErrConnectedAppNotFound
 			},
 		},
@@ -610,7 +689,7 @@ func TestCreateSubscriptionReturnsWarnings(t *testing.T) {
 			authenticateFn: func(context.Context, string) (tenant.Tenant, error) { return tenant.Tenant{ID: tenantID}, nil },
 		},
 		Subs: stubSubscriptionService{
-			createFn: func(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error) {
+			createFn: func(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, bool, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error) {
 				return subscription.Result{
 					Subscription: subscription.Subscription{ID: uuid.New()},
 					Warnings:     []string{"schema_missing_for_event_type"},
@@ -642,7 +721,7 @@ func TestReplaceSubscription(t *testing.T) {
 			authenticateFn: func(context.Context, string) (tenant.Tenant, error) { return tenant.Tenant{ID: tenantID}, nil },
 		},
 		Subs: stubSubscriptionService{
-			updateFn: func(_ context.Context, gotTenantID tenant.ID, gotSubscriptionID uuid.UUID, _ string, _ *uuid.UUID, _ *uuid.UUID, _ *uuid.UUID, _ *string, _ json.RawMessage, filter json.RawMessage, _ string, _ *string, _ bool, _ bool) (subscription.Result, error) {
+			updateFn: func(_ context.Context, gotTenantID tenant.ID, gotSubscriptionID uuid.UUID, _ string, _ *uuid.UUID, _ *uuid.UUID, _ *uuid.UUID, _ *uuid.UUID, _ *string, _ bool, _ *string, _ json.RawMessage, filter json.RawMessage, _ string, _ *string, _ bool, _ bool) (subscription.Result, error) {
 				if gotTenantID != tenantID || gotSubscriptionID != subscriptionID {
 					t.Fatal("unexpected update args")
 				}

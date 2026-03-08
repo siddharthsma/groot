@@ -1,0 +1,17 @@
+{
+  "payload": {
+    "license_id": "00000000-0000-0000-0000-000000000000",
+    "edition": "community",
+    "licensee": "Example Co",
+    "tenancy_mode": "single",
+    "max_tenants": 1,
+    "features": [
+      "core",
+      "agents",
+      "schemas",
+      "replay"
+    ],
+    "expires_at": "2027-01-01T00:00:00Z"
+  },
+  "signature": "base64-signature-placeholder"
+}

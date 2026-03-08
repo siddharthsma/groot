@@ -6,12 +6,18 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"groot/internal/edition"
 )
 
 type Config struct {
 	HTTPAddr             string
+	Edition              edition.Runtime
+	License              edition.LicenseConfig
+	CommunityTenantName  string
 	PostgresDSN          string
 	KafkaBrokers         []string
+	RouterConsumerGroup  string
 	TemporalAddress      string
 	TemporalNamespace    string
 	Auth                 AuthConfig
@@ -19,6 +25,7 @@ type Config struct {
 	Audit                AuditConfig
 	DeliveryRetry        DeliveryRetryConfig
 	Agent                AgentConfig
+	AgentRuntime         AgentRuntimeConfig
 	Replay               ReplayConfig
 	MaxChainDepth        int
 	AllowGlobalInstances bool
@@ -44,6 +51,17 @@ type AgentConfig struct {
 	TotalTimeout       time.Duration
 	MaxToolCalls       int
 	MaxToolOutputBytes int
+}
+
+type AgentRuntimeConfig struct {
+	Enabled               bool
+	BaseURL               string
+	Timeout               time.Duration
+	AutoCreate            bool
+	MaxIdleDays           int
+	MemoryMode            string
+	MemorySummaryMaxBytes int
+	SharedSecret          string
 }
 
 type ResendConfig struct {
@@ -136,6 +154,11 @@ func Load() (Config, error) {
 	var cfg Config
 
 	var err error
+	if cfg.Edition, err = edition.Parse(os.Getenv("GROOT_EDITION"), os.Getenv("GROOT_TENANCY_MODE")); err != nil {
+		return Config{}, err
+	}
+	cfg.License = loadLicenseConfig()
+	cfg.CommunityTenantName = strings.TrimSpace(os.Getenv("COMMUNITY_TENANT_NAME"))
 	if cfg.HTTPAddr, err = requiredEnv("GROOT_HTTP_ADDR"); err != nil {
 		return Config{}, err
 	}
@@ -158,6 +181,10 @@ func Load() (Config, error) {
 	if cfg.TemporalNamespace, err = requiredEnv("TEMPORAL_NAMESPACE"); err != nil {
 		return Config{}, err
 	}
+	cfg.RouterConsumerGroup = strings.TrimSpace(os.Getenv("ROUTER_CONSUMER_GROUP"))
+	if cfg.RouterConsumerGroup == "" {
+		cfg.RouterConsumerGroup = "groot-router"
+	}
 	if cfg.SystemAPIKey, err = requiredEnv("GROOT_SYSTEM_API_KEY"); err != nil {
 		return Config{}, err
 	}
@@ -173,6 +200,9 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Agent, err = loadAgentConfig(); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentRuntime, err = loadAgentRuntimeConfig(); err != nil {
 		return Config{}, err
 	}
 	if cfg.Replay, err = loadReplayConfig(); err != nil {
@@ -201,6 +231,15 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func loadLicenseConfig() edition.LicenseConfig {
+	return edition.LicenseConfig{
+		Path:             strings.TrimSpace(os.Getenv("GROOT_LICENSE_PATH")),
+		Required:         boolEnv("GROOT_LICENSE_REQUIRED", false),
+		PublicKeyPath:    strings.TrimSpace(os.Getenv("GROOT_LICENSE_PUBLIC_KEY_PATH")),
+		EnforceSignature: boolEnv("GROOT_LICENSE_ENFORCE_SIGNATURE", true),
+	}
 }
 
 func loadAuthConfig() (AuthConfig, error) {
@@ -422,6 +461,55 @@ func loadAgentConfig() (AgentConfig, error) {
 		TotalTimeout:       time.Duration(totalTimeoutSeconds) * time.Second,
 		MaxToolCalls:       maxToolCalls,
 		MaxToolOutputBytes: maxToolOutputBytes,
+	}, nil
+}
+
+func loadAgentRuntimeConfig() (AgentRuntimeConfig, error) {
+	timeoutSeconds, err := intEnv("AGENT_RUNTIME_TIMEOUT_SECONDS", 30)
+	if err != nil {
+		return AgentRuntimeConfig{}, err
+	}
+	if timeoutSeconds < 1 {
+		return AgentRuntimeConfig{}, fmt.Errorf("AGENT_RUNTIME_TIMEOUT_SECONDS must be at least 1")
+	}
+	maxIdleDays, err := intEnv("AGENT_SESSION_MAX_IDLE_DAYS", 30)
+	if err != nil {
+		return AgentRuntimeConfig{}, err
+	}
+	if maxIdleDays < 1 {
+		return AgentRuntimeConfig{}, fmt.Errorf("AGENT_SESSION_MAX_IDLE_DAYS must be at least 1")
+	}
+	summaryMaxBytes, err := intEnv("AGENT_MEMORY_SUMMARY_MAX_BYTES", 16384)
+	if err != nil {
+		return AgentRuntimeConfig{}, err
+	}
+	if summaryMaxBytes < 1 {
+		return AgentRuntimeConfig{}, fmt.Errorf("AGENT_MEMORY_SUMMARY_MAX_BYTES must be at least 1")
+	}
+	memoryMode := strings.TrimSpace(os.Getenv("AGENT_MEMORY_MODE"))
+	if memoryMode == "" {
+		memoryMode = "runtime_managed"
+	}
+	if memoryMode != "runtime_managed" {
+		return AgentRuntimeConfig{}, fmt.Errorf("AGENT_MEMORY_MODE must be runtime_managed")
+	}
+	baseURL := strings.TrimSpace(os.Getenv("AGENT_RUNTIME_BASE_URL"))
+	if baseURL == "" {
+		baseURL = "http://localhost:8090"
+	}
+	sharedSecret := strings.TrimSpace(os.Getenv("AGENT_RUNTIME_SHARED_SECRET"))
+	if sharedSecret == "" {
+		sharedSecret = "agent-runtime-secret"
+	}
+	return AgentRuntimeConfig{
+		Enabled:               boolEnv("AGENT_RUNTIME_ENABLED", true),
+		BaseURL:               baseURL,
+		Timeout:               time.Duration(timeoutSeconds) * time.Second,
+		AutoCreate:            boolEnv("AGENT_SESSION_AUTO_CREATE", true),
+		MaxIdleDays:           maxIdleDays,
+		MemoryMode:            memoryMode,
+		MemorySummaryMaxBytes: summaryMaxBytes,
+		SharedSecret:          sharedSecret,
 	}, nil
 }
 

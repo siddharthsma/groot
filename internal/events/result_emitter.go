@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -46,16 +47,20 @@ type Emitter struct {
 }
 
 type EmitRequest struct {
-	Subscription subscription.Subscription
-	DeliveryJob  delivery.Job
-	InputEvent   stream.Event
-	Connector    string
-	Operation    string
-	Status       string
-	Output       map[string]any
-	Error        *ResultError
-	ExternalID   *string
-	HTTPStatus   *int
+	Subscription   subscription.Subscription
+	DeliveryJob    delivery.Job
+	InputEvent     stream.Event
+	Connector      string
+	Operation      string
+	Status         string
+	Output         map[string]any
+	ToolCalls      []map[string]any
+	Error          *ResultError
+	ExternalID     *string
+	HTTPStatus     *int
+	AgentID        *uuid.UUID
+	AgentSessionID *uuid.UUID
+	SessionKey     string
 }
 
 type ResultError struct {
@@ -209,6 +214,24 @@ func buildPayload(req EmitRequest) (json.RawMessage, error) {
 		"http_status_code": req.HTTPStatus,
 		"output":           emptyOutput(req.Output),
 	}
+	if req.Connector == "llm" && req.Operation == "agent" {
+		payload["tool_calls"] = emptyToolCalls(req.ToolCalls)
+		if req.AgentID != nil {
+			payload["agent_id"] = req.AgentID.String()
+		} else {
+			payload["agent_id"] = nil
+		}
+		if req.AgentSessionID != nil {
+			payload["agent_session_id"] = req.AgentSessionID.String()
+		} else {
+			payload["agent_session_id"] = nil
+		}
+		if strings.TrimSpace(req.SessionKey) != "" {
+			payload["session_key"] = strings.TrimSpace(req.SessionKey)
+		} else {
+			payload["session_key"] = nil
+		}
+	}
 	if req.Error != nil {
 		payload["error"] = req.Error
 	}
@@ -222,6 +245,13 @@ func buildPayload(req EmitRequest) (json.RawMessage, error) {
 func emptyOutput(value map[string]any) map[string]any {
 	if value == nil {
 		return map[string]any{}
+	}
+	return value
+}
+
+func emptyToolCalls(value []map[string]any) []map[string]any {
+	if value == nil {
+		return []map[string]any{}
 	}
 	return value
 }

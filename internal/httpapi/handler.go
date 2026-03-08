@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 	"golang.org/x/time/rate"
+	"groot/internal/agent"
 
 	"groot/internal/apikey"
 	iauth "groot/internal/auth"
@@ -24,6 +25,7 @@ import (
 	stripeconnector "groot/internal/connectors/inbound/stripe"
 	"groot/internal/connectors/resend"
 	"groot/internal/delivery"
+	"groot/internal/edition"
 	"groot/internal/eventquery"
 	"groot/internal/functiondestination"
 	"groot/internal/graph"
@@ -79,12 +81,27 @@ type FunctionDestinationService interface {
 }
 
 type SubscriptionService interface {
-	Create(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
-	Update(context.Context, tenant.ID, uuid.UUID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
+	Create(context.Context, tenant.ID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, bool, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
+	Update(context.Context, tenant.ID, uuid.UUID, string, *uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, bool, *string, json.RawMessage, json.RawMessage, string, *string, bool, bool) (subscription.Result, error)
 	List(context.Context, tenant.ID) ([]subscription.Subscription, error)
 	AdminList(context.Context, *tenant.ID, string, string) ([]subscription.Subscription, error)
 	Pause(context.Context, tenant.ID, uuid.UUID) (subscription.Subscription, error)
 	Resume(context.Context, tenant.ID, uuid.UUID) (subscription.Subscription, error)
+}
+
+type AgentService interface {
+	Create(context.Context, tenant.ID, agent.CreateRequest) (agent.Definition, error)
+	Update(context.Context, tenant.ID, uuid.UUID, agent.CreateRequest) (agent.Definition, error)
+	Get(context.Context, tenant.ID, uuid.UUID) (agent.Definition, error)
+	List(context.Context, tenant.ID) ([]agent.Definition, error)
+	Delete(context.Context, tenant.ID, uuid.UUID) error
+	ListSessions(context.Context, tenant.ID, *uuid.UUID, string, int) ([]agent.Session, error)
+	GetSession(context.Context, tenant.ID, uuid.UUID) (agent.Session, error)
+	CloseSession(context.Context, tenant.ID, uuid.UUID) (agent.Session, error)
+}
+
+type AgentToolService interface {
+	ExecuteTool(context.Context, agent.ToolExecutionRequest) (agent.ToolExecutionResult, error)
 }
 
 type ConnectorInstanceService interface {
@@ -154,107 +171,122 @@ type AuditService interface {
 }
 
 type Handler struct {
-	logger                 *slog.Logger
-	checkers               []NamedChecker
-	routerCheckers         []NamedChecker
-	deliveryCheckers       []NamedChecker
-	tenantSvc              TenantService
-	eventSvc               EventService
-	eventQuerySvc          EventQueryService
-	appSvc                 ConnectedAppService
-	functionSvc            FunctionDestinationService
-	subSvc                 SubscriptionService
-	connectorSvc           ConnectorInstanceService
-	inboundRouteSvc        InboundRouteService
-	deliverySvc            DeliveryService
-	replaySvc              ReplayService
-	adminReplaySvc         ReplayService
-	schemaSvc              SchemaService
-	resendSvc              ResendService
-	slackSvc               SlackService
-	stripeSvc              StripeService
-	metrics                *observability.Metrics
-	authTenantFn           func(context.Context, string) (tenant.Tenant, error)
-	authSvc                Authenticator
-	adminAuthSvc           Authenticator
-	adminLimiter           *rate.Limiter
-	apiKeySvc              APIKeyService
-	graphSvc               GraphService
-	auditSvc               AuditService
-	systemAPIKey           string
-	adminEnabled           bool
-	adminAllowViewPayloads bool
-	adminReplayEnabled     bool
-	adminReplayMaxEvents   int
+	logger                   *slog.Logger
+	checkers                 []NamedChecker
+	routerCheckers           []NamedChecker
+	deliveryCheckers         []NamedChecker
+	tenantSvc                TenantService
+	eventSvc                 EventService
+	eventQuerySvc            EventQueryService
+	appSvc                   ConnectedAppService
+	functionSvc              FunctionDestinationService
+	subSvc                   SubscriptionService
+	connectorSvc             ConnectorInstanceService
+	inboundRouteSvc          InboundRouteService
+	deliverySvc              DeliveryService
+	replaySvc                ReplayService
+	adminReplaySvc           ReplayService
+	schemaSvc                SchemaService
+	resendSvc                ResendService
+	slackSvc                 SlackService
+	stripeSvc                StripeService
+	metrics                  *observability.Metrics
+	authTenantFn             func(context.Context, string) (tenant.Tenant, error)
+	authSvc                  Authenticator
+	adminAuthSvc             Authenticator
+	adminLimiter             *rate.Limiter
+	apiKeySvc                APIKeyService
+	graphSvc                 GraphService
+	auditSvc                 AuditService
+	agentSvc                 AgentService
+	agentToolSvc             AgentToolService
+	systemAPIKey             string
+	agentRuntimeSharedSecret string
+	editionRuntime           edition.Runtime
+	communityBootstrapTenant *uuid.UUID
+	adminEnabled             bool
+	adminAllowViewPayloads   bool
+	adminReplayEnabled       bool
+	adminReplayMaxEvents     int
 }
 
 type Options struct {
-	Logger                 *slog.Logger
-	Checkers               []NamedChecker
-	RouterCheckers         []NamedChecker
-	DeliveryCheckers       []NamedChecker
-	Tenants                TenantService
-	EventSvc               EventService
-	EventQuerySvc          EventQueryService
-	Apps                   ConnectedAppService
-	Functions              FunctionDestinationService
-	Subs                   SubscriptionService
-	ConnectorInstances     ConnectorInstanceService
-	InboundRoutes          InboundRouteService
-	Deliveries             DeliveryService
-	Replay                 ReplayService
-	AdminReplay            ReplayService
-	Schemas                SchemaService
-	Resend                 ResendService
-	Slack                  SlackService
-	Stripe                 StripeService
-	Auth                   Authenticator
-	AdminAuth              Authenticator
-	AdminEnabled           bool
-	AdminAllowViewPayloads bool
-	AdminReplayEnabled     bool
-	AdminRateLimitRPS      int
-	AdminReplayMaxEvents   int
-	APIKeys                APIKeyService
-	Graph                  GraphService
-	Audit                  AuditService
-	SystemAPIKey           string
-	Metrics                *observability.Metrics
+	Logger                   *slog.Logger
+	Checkers                 []NamedChecker
+	RouterCheckers           []NamedChecker
+	DeliveryCheckers         []NamedChecker
+	Tenants                  TenantService
+	EventSvc                 EventService
+	EventQuerySvc            EventQueryService
+	Apps                     ConnectedAppService
+	Functions                FunctionDestinationService
+	Subs                     SubscriptionService
+	ConnectorInstances       ConnectorInstanceService
+	InboundRoutes            InboundRouteService
+	Deliveries               DeliveryService
+	Replay                   ReplayService
+	AdminReplay              ReplayService
+	Schemas                  SchemaService
+	Resend                   ResendService
+	Slack                    SlackService
+	Stripe                   StripeService
+	Auth                     Authenticator
+	AdminAuth                Authenticator
+	AdminEnabled             bool
+	AdminAllowViewPayloads   bool
+	AdminReplayEnabled       bool
+	AdminRateLimitRPS        int
+	AdminReplayMaxEvents     int
+	APIKeys                  APIKeyService
+	Graph                    GraphService
+	Audit                    AuditService
+	Agents                   AgentService
+	AgentTools               AgentToolService
+	SystemAPIKey             string
+	AgentRuntimeSharedSecret string
+	Edition                  edition.Runtime
+	CommunityBootstrapTenant *uuid.UUID
+	Metrics                  *observability.Metrics
 }
 
 func NewHandler(opts Options) http.Handler {
 	handler := &Handler{
-		checkers:               opts.Checkers,
-		logger:                 opts.Logger,
-		routerCheckers:         opts.RouterCheckers,
-		deliveryCheckers:       opts.DeliveryCheckers,
-		tenantSvc:              opts.Tenants,
-		eventSvc:               opts.EventSvc,
-		eventQuerySvc:          opts.EventQuerySvc,
-		appSvc:                 opts.Apps,
-		functionSvc:            opts.Functions,
-		subSvc:                 opts.Subs,
-		connectorSvc:           opts.ConnectorInstances,
-		inboundRouteSvc:        opts.InboundRoutes,
-		deliverySvc:            opts.Deliveries,
-		replaySvc:              opts.Replay,
-		adminReplaySvc:         opts.AdminReplay,
-		schemaSvc:              opts.Schemas,
-		resendSvc:              opts.Resend,
-		slackSvc:               opts.Slack,
-		stripeSvc:              opts.Stripe,
-		authSvc:                opts.Auth,
-		adminAuthSvc:           opts.AdminAuth,
-		adminLimiter:           newAdminLimiter(opts.AdminRateLimitRPS),
-		apiKeySvc:              opts.APIKeys,
-		graphSvc:               opts.Graph,
-		auditSvc:               opts.Audit,
-		metrics:                opts.Metrics,
-		systemAPIKey:           opts.SystemAPIKey,
-		adminEnabled:           opts.AdminEnabled,
-		adminAllowViewPayloads: opts.AdminAllowViewPayloads,
-		adminReplayEnabled:     opts.AdminReplayEnabled,
-		adminReplayMaxEvents:   opts.AdminReplayMaxEvents,
+		checkers:                 opts.Checkers,
+		logger:                   opts.Logger,
+		routerCheckers:           opts.RouterCheckers,
+		deliveryCheckers:         opts.DeliveryCheckers,
+		tenantSvc:                opts.Tenants,
+		eventSvc:                 opts.EventSvc,
+		eventQuerySvc:            opts.EventQuerySvc,
+		appSvc:                   opts.Apps,
+		functionSvc:              opts.Functions,
+		subSvc:                   opts.Subs,
+		connectorSvc:             opts.ConnectorInstances,
+		inboundRouteSvc:          opts.InboundRoutes,
+		deliverySvc:              opts.Deliveries,
+		replaySvc:                opts.Replay,
+		adminReplaySvc:           opts.AdminReplay,
+		schemaSvc:                opts.Schemas,
+		resendSvc:                opts.Resend,
+		slackSvc:                 opts.Slack,
+		stripeSvc:                opts.Stripe,
+		authSvc:                  opts.Auth,
+		adminAuthSvc:             opts.AdminAuth,
+		adminLimiter:             newAdminLimiter(opts.AdminRateLimitRPS),
+		apiKeySvc:                opts.APIKeys,
+		graphSvc:                 opts.Graph,
+		auditSvc:                 opts.Audit,
+		agentSvc:                 opts.Agents,
+		agentToolSvc:             opts.AgentTools,
+		metrics:                  opts.Metrics,
+		systemAPIKey:             opts.SystemAPIKey,
+		agentRuntimeSharedSecret: strings.TrimSpace(opts.AgentRuntimeSharedSecret),
+		editionRuntime:           opts.Edition,
+		communityBootstrapTenant: opts.CommunityBootstrapTenant,
+		adminEnabled:             opts.AdminEnabled,
+		adminAllowViewPayloads:   opts.AdminAllowViewPayloads,
+		adminReplayEnabled:       opts.AdminReplayEnabled,
+		adminReplayMaxEvents:     opts.AdminReplayMaxEvents,
 	}
 	if handler.logger == nil {
 		handler.logger = slog.New(slog.NewTextHandler(bytes.NewBuffer(nil), nil))
@@ -269,14 +301,15 @@ func NewHandler(opts Options) http.Handler {
 	mux.HandleFunc("GET /health/router", handler.routerHealth)
 	mux.HandleFunc("GET /health/delivery", handler.deliveryHealth)
 	mux.HandleFunc("GET /metrics", handler.metricsEndpoint)
+	mux.HandleFunc("GET /system/edition", handler.systemEdition)
 	mux.HandleFunc("GET /schemas", handler.listSchemas)
 	mux.HandleFunc("GET /schemas/{full_name}", handler.getSchema)
 	mux.HandleFunc("POST /webhooks/resend", handler.resendWebhook)
 	mux.HandleFunc("POST /webhooks/slack/events", handler.slackWebhook)
 	mux.HandleFunc("POST /webhooks/stripe", handler.stripeWebhook)
-	mux.HandleFunc("POST /tenants", handler.createTenant)
-	mux.HandleFunc("GET /tenants", handler.listTenants)
-	mux.HandleFunc("GET /tenants/{tenant_id}", handler.getTenant)
+	mux.Handle("POST /tenants", handler.communityEditionRestriction(http.HandlerFunc(handler.createTenant)))
+	mux.Handle("GET /tenants", handler.communityEditionRestriction(http.HandlerFunc(handler.listTenants)))
+	mux.Handle("GET /tenants/{tenant_id}", handler.communityEditionRestriction(http.HandlerFunc(handler.getTenant)))
 
 	var eventsHandler http.Handler = http.HandlerFunc(handler.createEvent)
 	var listEventsHandler http.Handler = http.HandlerFunc(handler.listEvents)
@@ -300,6 +333,11 @@ func NewHandler(opts Options) http.Handler {
 	var connectorInstancesPostHandler http.Handler = http.HandlerFunc(handler.connectorInstances)
 	var inboundRoutesHandler http.Handler = http.HandlerFunc(handler.inboundRoutes)
 	var systemInboundRoutesHandler http.Handler = http.HandlerFunc(handler.systemInboundRoutes)
+	var agentsHandler http.Handler = http.HandlerFunc(handler.agents)
+	var agentHandler http.Handler = http.HandlerFunc(handler.agent)
+	var agentSessionsHandler http.Handler = http.HandlerFunc(handler.agentSessions)
+	var agentSessionHandler http.Handler = http.HandlerFunc(handler.agentSession)
+	var runtimeToolHandler http.Handler = http.HandlerFunc(handler.agentRuntimeToolCalls)
 	if handler.systemAPIKey != "" {
 		resendBootstrapHandler = handler.requireSystemAuth(resendBootstrapHandler)
 		systemInboundRoutesHandler = handler.requireSystemAuth(systemInboundRoutesHandler)
@@ -324,6 +362,10 @@ func NewHandler(opts Options) http.Handler {
 		stripeEnableHandler = handler.requireTenantAuth(stripeEnableHandler)
 		connectorInstancesGetHandler = handler.requireTenantAuth(connectorInstancesGetHandler)
 		inboundRoutesHandler = handler.requireTenantAuth(inboundRoutesHandler)
+		agentsHandler = handler.requireTenantAuth(agentsHandler)
+		agentHandler = handler.requireTenantAuth(agentHandler)
+		agentSessionsHandler = handler.requireTenantAuth(agentSessionsHandler)
+		agentSessionHandler = handler.requireTenantAuth(agentSessionHandler)
 	}
 	mux.Handle("POST /events", eventsHandler)
 	mux.Handle("GET /events", listEventsHandler)
@@ -354,24 +396,33 @@ func NewHandler(opts Options) http.Handler {
 	mux.Handle("POST /routes/inbound", inboundRoutesHandler)
 	mux.Handle("GET /routes/inbound", inboundRoutesHandler)
 	mux.Handle("GET /system/routes/inbound", systemInboundRoutesHandler)
+	mux.Handle("POST /agents", agentsHandler)
+	mux.Handle("GET /agents", agentsHandler)
+	mux.Handle("GET /agents/{agent_id}", agentHandler)
+	mux.Handle("PUT /agents/{agent_id}", agentHandler)
+	mux.Handle("DELETE /agents/{agent_id}", agentHandler)
+	mux.Handle("GET /agent-sessions", agentSessionsHandler)
+	mux.Handle("GET /agent-sessions/{session_id}", agentSessionHandler)
+	mux.Handle("POST /agent-sessions/{session_id}/close", agentSessionHandler)
+	mux.Handle("POST /internal/agent-runtime/tool-calls", runtimeToolHandler)
 	if handler.adminEnabled {
-		mux.Handle("GET /admin/tenants", handler.requireAdmin(http.HandlerFunc(handler.adminTenants)))
-		mux.Handle("POST /admin/tenants", handler.requireAdmin(http.HandlerFunc(handler.adminTenants)))
-		mux.Handle("GET /admin/tenants/{tenant_id}", handler.requireAdmin(http.HandlerFunc(handler.adminTenant)))
-		mux.Handle("PATCH /admin/tenants/{tenant_id}", handler.requireAdmin(http.HandlerFunc(handler.adminTenant)))
-		mux.Handle("POST /admin/tenants/{tenant_id}/api-keys", handler.requireAdmin(http.HandlerFunc(handler.adminTenantAPIKeys)))
-		mux.Handle("GET /admin/tenants/{tenant_id}/api-keys", handler.requireAdmin(http.HandlerFunc(handler.adminTenantAPIKeys)))
-		mux.Handle("POST /admin/tenants/{tenant_id}/api-keys/{api_key_id}/revoke", handler.requireAdmin(http.HandlerFunc(handler.adminTenantAPIKeyRevoke)))
-		mux.Handle("GET /admin/connector-instances", handler.requireAdmin(http.HandlerFunc(handler.adminConnectorInstances)))
-		mux.Handle("PUT /admin/connector-instances/{id}", handler.requireAdmin(http.HandlerFunc(handler.adminConnectorInstance)))
-		mux.Handle("GET /admin/subscriptions", handler.requireAdmin(http.HandlerFunc(handler.adminSubscriptions)))
-		mux.Handle("POST /admin/tenants/{tenant_id}/subscriptions", handler.requireAdmin(http.HandlerFunc(handler.adminTenantSubscriptions)))
-		mux.Handle("GET /admin/events", handler.requireAdmin(http.HandlerFunc(handler.adminEvents)))
-		mux.Handle("GET /admin/delivery-jobs", handler.requireAdmin(http.HandlerFunc(handler.adminDeliveryJobs)))
-		mux.Handle("GET /admin/topology", handler.requireAdmin(http.HandlerFunc(handler.adminTopology)))
-		mux.Handle("GET /admin/events/{event_id}/execution-graph", handler.requireAdmin(http.HandlerFunc(handler.adminExecutionGraph)))
-		mux.Handle("POST /admin/events/{event_id}/replay", handler.requireAdmin(http.HandlerFunc(handler.adminReplayEvent)))
-		mux.Handle("POST /admin/events/replay", handler.requireAdmin(http.HandlerFunc(handler.adminReplayEvents)))
+		mux.Handle("GET /admin/tenants", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminTenants))))
+		mux.Handle("POST /admin/tenants", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminTenants))))
+		mux.Handle("GET /admin/tenants/{tenant_id}", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminTenant))))
+		mux.Handle("PATCH /admin/tenants/{tenant_id}", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminTenant))))
+		mux.Handle("POST /admin/tenants/{tenant_id}/api-keys", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminTenantAPIKeys))))
+		mux.Handle("GET /admin/tenants/{tenant_id}/api-keys", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminTenantAPIKeys))))
+		mux.Handle("POST /admin/tenants/{tenant_id}/api-keys/{api_key_id}/revoke", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminTenantAPIKeyRevoke))))
+		mux.Handle("GET /admin/connector-instances", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminConnectorInstances))))
+		mux.Handle("PUT /admin/connector-instances/{id}", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminConnectorInstance))))
+		mux.Handle("GET /admin/subscriptions", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminSubscriptions))))
+		mux.Handle("POST /admin/tenants/{tenant_id}/subscriptions", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminTenantSubscriptions))))
+		mux.Handle("GET /admin/events", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminEvents))))
+		mux.Handle("GET /admin/delivery-jobs", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminDeliveryJobs))))
+		mux.Handle("GET /admin/topology", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminTopology))))
+		mux.Handle("GET /admin/events/{event_id}/execution-graph", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminExecutionGraph))))
+		mux.Handle("POST /admin/events/{event_id}/replay", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminReplayEvent))))
+		mux.Handle("POST /admin/events/replay", handler.requireAdmin(handler.communityEditionRestriction(http.HandlerFunc(handler.adminReplayEvents))))
 	}
 
 	return mux
@@ -404,6 +455,26 @@ func (h *Handler) metricsEndpoint(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte(h.metrics.Prometheus()))
 }
 
+func (h *Handler) systemEdition(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"build_edition":     h.editionRuntime.BuildEdition,
+		"effective_edition": h.editionRuntime.EffectiveEdition,
+		"tenancy_mode":      h.editionRuntime.TenancyMode,
+		"license":           h.editionRuntime.License,
+		"capabilities":      h.editionRuntime.Capabilities,
+	})
+}
+
+func (h *Handler) communityEditionRestriction(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if h.editionRuntime.IsCommunity() {
+			writeError(w, http.StatusForbidden, "community_edition_restriction")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 func (h *Handler) runChecks(w http.ResponseWriter, r *http.Request, checkers []NamedChecker) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -430,6 +501,22 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 	if h.tenantSvc == nil {
 		writeError(w, http.StatusNotImplemented, "tenant service unavailable")
 		return
+	}
+	if !h.editionRuntime.Capabilities.TenantCreationAllowed {
+		writeError(w, http.StatusForbidden, "community_edition_restriction")
+		return
+	}
+	if h.editionRuntime.MaxTenants > 0 {
+		tenants, err := h.tenantSvc.ListTenants(r.Context())
+		if err != nil {
+			h.logger.Error("list tenants for tenant creation limit", slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "failed to validate tenant limit")
+			return
+		}
+		if len(tenants) >= h.editionRuntime.MaxTenants {
+			writeError(w, http.StatusForbidden, "tenant_limit_exceeded")
+			return
+		}
 	}
 
 	var req struct {
@@ -787,6 +874,271 @@ func (h *Handler) connectedApps(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) agents(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.agentSvc == nil {
+		writeError(w, http.StatusNotImplemented, "agent service unavailable")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodPost:
+		var req agent.CreateRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		created, err := h.agentSvc.Create(r.Context(), tenantID, req)
+		if err != nil {
+			switch {
+			case errors.Is(err, agent.ErrInvalidName), errors.Is(err, agent.ErrInvalidInstructions), errors.Is(err, agent.ErrInvalidAllowedTools):
+				writeError(w, http.StatusBadRequest, err.Error())
+			case errors.Is(err, agent.ErrFunctionDestinationMissing):
+				writeError(w, http.StatusNotFound, "function destination not found")
+			case errors.Is(err, agent.ErrDuplicateName):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				h.logger.Error("create agent", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+				writeError(w, http.StatusInternalServerError, "failed to create agent")
+			}
+			return
+		}
+		h.audit("agent.create", "agent", &created.ID, map[string]any{"name": created.Name}, r.Context())
+		writeJSON(w, http.StatusCreated, created)
+	case http.MethodGet:
+		records, err := h.agentSvc.List(r.Context(), tenantID)
+		if err != nil {
+			h.logger.Error("list agents", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+			writeError(w, http.StatusInternalServerError, "failed to list agents")
+			return
+		}
+		writeJSON(w, http.StatusOK, records)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) agent(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.agentSvc == nil {
+		writeError(w, http.StatusNotImplemented, "agent service unavailable")
+		return
+	}
+	agentID, err := uuid.Parse(r.PathValue("agent_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid agent_id")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		record, err := h.agentSvc.Get(r.Context(), tenantID, agentID)
+		if err != nil {
+			switch {
+			case errors.Is(err, agent.ErrNotFound):
+				writeError(w, http.StatusNotFound, "agent not found")
+			default:
+				h.logger.Error("get agent", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+				writeError(w, http.StatusInternalServerError, "failed to get agent")
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, record)
+	case http.MethodPut:
+		var req agent.CreateRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		updated, err := h.agentSvc.Update(r.Context(), tenantID, agentID, req)
+		if err != nil {
+			switch {
+			case errors.Is(err, agent.ErrNotFound):
+				writeError(w, http.StatusNotFound, "agent not found")
+			case errors.Is(err, agent.ErrInvalidName), errors.Is(err, agent.ErrInvalidInstructions), errors.Is(err, agent.ErrInvalidAllowedTools), errors.Is(err, agent.ErrDuplicateName):
+				writeError(w, http.StatusBadRequest, err.Error())
+			case errors.Is(err, agent.ErrFunctionDestinationMissing):
+				writeError(w, http.StatusNotFound, "function destination not found")
+			default:
+				h.logger.Error("update agent", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+				writeError(w, http.StatusInternalServerError, "failed to update agent")
+			}
+			return
+		}
+		h.audit("agent.update", "agent", &updated.ID, map[string]any{"name": updated.Name}, r.Context())
+		writeJSON(w, http.StatusOK, updated)
+	case http.MethodDelete:
+		if err := h.agentSvc.Delete(r.Context(), tenantID, agentID); err != nil {
+			switch {
+			case errors.Is(err, agent.ErrNotFound):
+				writeError(w, http.StatusNotFound, "agent not found")
+			case errors.Is(err, agent.ErrSubscriptionReferences), errors.Is(err, agent.ErrActiveSessionsExist):
+				writeError(w, http.StatusBadRequest, err.Error())
+			default:
+				h.logger.Error("delete agent", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+				writeError(w, http.StatusInternalServerError, "failed to delete agent")
+			}
+			return
+		}
+		h.audit("agent.delete", "agent", &agentID, nil, r.Context())
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) agentSessions(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.agentSvc == nil {
+		writeError(w, http.StatusNotImplemented, "agent service unavailable")
+		return
+	}
+
+	var agentID *uuid.UUID
+	if raw := strings.TrimSpace(r.URL.Query().Get("agent_id")); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid agent_id")
+			return
+		}
+		agentID = &parsed
+	}
+	limit, err := optionalLimit(r.URL.Query().Get("limit"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid limit")
+		return
+	}
+	records, err := h.agentSvc.ListSessions(r.Context(), tenantID, agentID, r.URL.Query().Get("status"), limit)
+	if err != nil {
+		h.logger.Error("list agent sessions", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+		writeError(w, http.StatusInternalServerError, "failed to list agent sessions")
+		return
+	}
+	writeJSON(w, http.StatusOK, records)
+}
+
+func (h *Handler) agentSession(w http.ResponseWriter, r *http.Request) {
+	tenantID, ok := tenantIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if h.agentSvc == nil {
+		writeError(w, http.StatusNotImplemented, "agent service unavailable")
+		return
+	}
+	sessionID, err := uuid.Parse(r.PathValue("session_id"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid session_id")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		record, err := h.agentSvc.GetSession(r.Context(), tenantID, sessionID)
+		if err != nil {
+			switch {
+			case errors.Is(err, agent.ErrSessionNotFound):
+				writeError(w, http.StatusNotFound, "agent session not found")
+			default:
+				h.logger.Error("get agent session", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+				writeError(w, http.StatusInternalServerError, "failed to get agent session")
+			}
+			return
+		}
+		writeJSON(w, http.StatusOK, record)
+	case http.MethodPost:
+		record, err := h.agentSvc.CloseSession(r.Context(), tenantID, sessionID)
+		if err != nil {
+			switch {
+			case errors.Is(err, agent.ErrSessionNotFound):
+				writeError(w, http.StatusNotFound, "agent session not found")
+			default:
+				h.logger.Error("close agent session", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+				writeError(w, http.StatusInternalServerError, "failed to close agent session")
+			}
+			return
+		}
+		h.audit("agent_session.close", "agent_session", &record.ID, map[string]any{"agent_id": record.AgentID.String()}, r.Context())
+		writeJSON(w, http.StatusOK, record)
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+}
+
+func (h *Handler) agentRuntimeToolCalls(w http.ResponseWriter, r *http.Request) {
+	if h.agentToolSvc == nil {
+		writeError(w, http.StatusNotImplemented, "agent runtime tool service unavailable")
+		return
+	}
+	expected := strings.TrimSpace(h.agentRuntimeSharedSecret)
+	if expected == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if bearerToken(r.Header.Get("Authorization")) != expected {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	var req struct {
+		TenantID       string          `json:"tenant_id"`
+		AgentID        string          `json:"agent_id"`
+		AgentSessionID string          `json:"agent_session_id"`
+		AgentRunID     string          `json:"agent_run_id"`
+		Tool           string          `json:"tool"`
+		Arguments      json.RawMessage `json:"arguments"`
+	}
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	tenantID, err := uuid.Parse(strings.TrimSpace(req.TenantID))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tenant_id")
+		return
+	}
+	agentID, err := uuid.Parse(strings.TrimSpace(req.AgentID))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid agent_id")
+		return
+	}
+	sessionID, err := uuid.Parse(strings.TrimSpace(req.AgentSessionID))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid agent_session_id")
+		return
+	}
+	runID, err := uuid.Parse(strings.TrimSpace(req.AgentRunID))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid agent_run_id")
+		return
+	}
+	result, err := h.agentToolSvc.ExecuteTool(r.Context(), agent.ToolExecutionRequest{
+		TenantID:       tenantID,
+		AgentID:        agentID,
+		AgentSessionID: sessionID,
+		AgentRunID:     runID,
+		Tool:           strings.TrimSpace(req.Tool),
+		Arguments:      req.Arguments,
+	})
+	if err != nil {
+		h.logger.Error("agent runtime tool call", slog.String("agent_id", agentID.String()), slog.String("agent_run_id", runID.String()), slog.String("error", err.Error()))
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
 	tenantID, ok := tenantIDFromContext(r.Context())
 	if !ok {
@@ -801,55 +1153,34 @@ func (h *Handler) subscriptions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		var req struct {
-			ConnectedAppID        string          `json:"connected_app_id"`
-			DestinationType       string          `json:"destination_type"`
-			FunctionDestinationID string          `json:"function_destination_id"`
-			ConnectorInstanceID   string          `json:"connector_instance_id"`
-			Operation             string          `json:"operation"`
-			OperationParams       json.RawMessage `json:"operation_params"`
-			Filter                json.RawMessage `json:"filter"`
-			EventType             string          `json:"event_type"`
-			EventSource           *string         `json:"event_source"`
-			EmitSuccessEvent      bool            `json:"emit_success_event"`
-			EmitFailureEvent      bool            `json:"emit_failure_event"`
+			ConnectedAppID         string          `json:"connected_app_id"`
+			DestinationType        string          `json:"destination_type"`
+			FunctionDestinationID  string          `json:"function_destination_id"`
+			ConnectorInstanceID    string          `json:"connector_instance_id"`
+			AgentID                string          `json:"agent_id"`
+			SessionKeyTemplate     *string         `json:"session_key_template"`
+			SessionCreateIfMissing *bool           `json:"session_create_if_missing"`
+			Operation              string          `json:"operation"`
+			OperationParams        json.RawMessage `json:"operation_params"`
+			Filter                 json.RawMessage `json:"filter"`
+			EventType              string          `json:"event_type"`
+			EventSource            *string         `json:"event_source"`
+			EmitSuccessEvent       bool            `json:"emit_success_event"`
+			EmitFailureEvent       bool            `json:"emit_failure_event"`
 		}
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		var appID *uuid.UUID
-		if strings.TrimSpace(req.ConnectedAppID) != "" {
-			parsed, err := uuid.Parse(req.ConnectedAppID)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid connected_app_id")
-				return
-			}
-			appID = &parsed
+		appID, functionID, connectorInstanceID, agentID, operation, ok := parseSubscriptionRequestFields(w, req.ConnectedAppID, req.FunctionDestinationID, req.ConnectorInstanceID, req.AgentID, req.Operation)
+		if !ok {
+			return
 		}
-		var functionID *uuid.UUID
-		if strings.TrimSpace(req.FunctionDestinationID) != "" {
-			parsed, err := uuid.Parse(req.FunctionDestinationID)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid function_destination_id")
-				return
-			}
-			functionID = &parsed
+		sessionCreateIfMissing := true
+		if req.SessionCreateIfMissing != nil {
+			sessionCreateIfMissing = *req.SessionCreateIfMissing
 		}
-		var connectorInstanceID *uuid.UUID
-		if strings.TrimSpace(req.ConnectorInstanceID) != "" {
-			parsed, err := uuid.Parse(req.ConnectorInstanceID)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, "invalid connector_instance_id")
-				return
-			}
-			connectorInstanceID = &parsed
-		}
-		var operation *string
-		if strings.TrimSpace(req.Operation) != "" {
-			trimmed := strings.TrimSpace(req.Operation)
-			operation = &trimmed
-		}
-		result, err := h.subSvc.Create(r.Context(), tenantID, req.DestinationType, appID, functionID, connectorInstanceID, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
+		result, err := h.subSvc.Create(r.Context(), tenantID, req.DestinationType, appID, functionID, connectorInstanceID, agentID, req.SessionKeyTemplate, sessionCreateIfMissing, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
 		if err != nil {
 			switch {
 			case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams):
@@ -906,27 +1237,34 @@ func (h *Handler) replaceSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ConnectedAppID        string          `json:"connected_app_id"`
-		DestinationType       string          `json:"destination_type"`
-		FunctionDestinationID string          `json:"function_destination_id"`
-		ConnectorInstanceID   string          `json:"connector_instance_id"`
-		Operation             string          `json:"operation"`
-		OperationParams       json.RawMessage `json:"operation_params"`
-		Filter                json.RawMessage `json:"filter"`
-		EventType             string          `json:"event_type"`
-		EventSource           *string         `json:"event_source"`
-		EmitSuccessEvent      bool            `json:"emit_success_event"`
-		EmitFailureEvent      bool            `json:"emit_failure_event"`
+		ConnectedAppID         string          `json:"connected_app_id"`
+		DestinationType        string          `json:"destination_type"`
+		FunctionDestinationID  string          `json:"function_destination_id"`
+		ConnectorInstanceID    string          `json:"connector_instance_id"`
+		AgentID                string          `json:"agent_id"`
+		SessionKeyTemplate     *string         `json:"session_key_template"`
+		SessionCreateIfMissing *bool           `json:"session_create_if_missing"`
+		Operation              string          `json:"operation"`
+		OperationParams        json.RawMessage `json:"operation_params"`
+		Filter                 json.RawMessage `json:"filter"`
+		EventType              string          `json:"event_type"`
+		EventSource            *string         `json:"event_source"`
+		EmitSuccessEvent       bool            `json:"emit_success_event"`
+		EmitFailureEvent       bool            `json:"emit_failure_event"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	appID, functionID, connectorInstanceID, operation, ok := parseSubscriptionRequestIDs(w, req.ConnectedAppID, req.FunctionDestinationID, req.ConnectorInstanceID, req.Operation)
+	appID, functionID, connectorInstanceID, agentID, operation, ok := parseSubscriptionRequestFields(w, req.ConnectedAppID, req.FunctionDestinationID, req.ConnectorInstanceID, req.AgentID, req.Operation)
 	if !ok {
 		return
 	}
-	result, err := h.subSvc.Update(r.Context(), tenantID, subscriptionID, req.DestinationType, appID, functionID, connectorInstanceID, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
+	sessionCreateIfMissing := true
+	if req.SessionCreateIfMissing != nil {
+		sessionCreateIfMissing = *req.SessionCreateIfMissing
+	}
+	result, err := h.subSvc.Update(r.Context(), tenantID, subscriptionID, req.DestinationType, appID, functionID, connectorInstanceID, agentID, req.SessionKeyTemplate, sessionCreateIfMissing, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
 	if err != nil {
 		switch {
 		case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams):
@@ -954,13 +1292,13 @@ func (h *Handler) replaceSubscription(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, subscriptionResponse(result))
 }
 
-func parseSubscriptionRequestIDs(w http.ResponseWriter, connectedAppIDRaw, functionDestinationIDRaw, connectorInstanceIDRaw, operationRaw string) (*uuid.UUID, *uuid.UUID, *uuid.UUID, *string, bool) {
+func parseSubscriptionRequestFields(w http.ResponseWriter, connectedAppIDRaw, functionDestinationIDRaw, connectorInstanceIDRaw, agentIDRaw, operationRaw string) (*uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, bool) {
 	var appID *uuid.UUID
 	if strings.TrimSpace(connectedAppIDRaw) != "" {
 		parsed, err := uuid.Parse(connectedAppIDRaw)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid connected_app_id")
-			return nil, nil, nil, nil, false
+			return nil, nil, nil, nil, nil, false
 		}
 		appID = &parsed
 	}
@@ -969,7 +1307,7 @@ func parseSubscriptionRequestIDs(w http.ResponseWriter, connectedAppIDRaw, funct
 		parsed, err := uuid.Parse(functionDestinationIDRaw)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid function_destination_id")
-			return nil, nil, nil, nil, false
+			return nil, nil, nil, nil, nil, false
 		}
 		functionID = &parsed
 	}
@@ -978,16 +1316,25 @@ func parseSubscriptionRequestIDs(w http.ResponseWriter, connectedAppIDRaw, funct
 		parsed, err := uuid.Parse(connectorInstanceIDRaw)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid connector_instance_id")
-			return nil, nil, nil, nil, false
+			return nil, nil, nil, nil, nil, false
 		}
 		connectorInstanceID = &parsed
+	}
+	var agentID *uuid.UUID
+	if strings.TrimSpace(agentIDRaw) != "" {
+		parsed, err := uuid.Parse(agentIDRaw)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid agent_id")
+			return nil, nil, nil, nil, nil, false
+		}
+		agentID = &parsed
 	}
 	var operation *string
 	if strings.TrimSpace(operationRaw) != "" {
 		trimmed := strings.TrimSpace(operationRaw)
 		operation = &trimmed
 	}
-	return appID, functionID, connectorInstanceID, operation, true
+	return appID, functionID, connectorInstanceID, agentID, operation, true
 }
 
 func subscriptionResponse(result subscription.Result) map[string]any {
@@ -1014,6 +1361,14 @@ func writeSubscriptionFilterError(w http.ResponseWriter, err error) {
 		"invalid_paths": filterErr.InvalidPaths,
 		"invalid_ops":   filterErr.InvalidOps,
 	})
+}
+
+func bearerToken(header string) string {
+	parts := strings.Fields(strings.TrimSpace(header))
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return parts[1]
 }
 
 func (h *Handler) connectorInstances(w http.ResponseWriter, r *http.Request) {

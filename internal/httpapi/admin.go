@@ -300,27 +300,34 @@ func (h *Handler) adminTenantSubscriptions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var req struct {
-		ConnectedAppID        string          `json:"connected_app_id"`
-		DestinationType       string          `json:"destination_type"`
-		FunctionDestinationID string          `json:"function_destination_id"`
-		ConnectorInstanceID   string          `json:"connector_instance_id"`
-		Operation             string          `json:"operation"`
-		OperationParams       json.RawMessage `json:"operation_params"`
-		Filter                json.RawMessage `json:"filter"`
-		EventType             string          `json:"event_type"`
-		EventSource           *string         `json:"event_source"`
-		EmitSuccessEvent      bool            `json:"emit_success_event"`
-		EmitFailureEvent      bool            `json:"emit_failure_event"`
+		ConnectedAppID         string          `json:"connected_app_id"`
+		DestinationType        string          `json:"destination_type"`
+		FunctionDestinationID  string          `json:"function_destination_id"`
+		ConnectorInstanceID    string          `json:"connector_instance_id"`
+		AgentID                string          `json:"agent_id"`
+		SessionKeyTemplate     *string         `json:"session_key_template"`
+		SessionCreateIfMissing *bool           `json:"session_create_if_missing"`
+		Operation              string          `json:"operation"`
+		OperationParams        json.RawMessage `json:"operation_params"`
+		Filter                 json.RawMessage `json:"filter"`
+		EventType              string          `json:"event_type"`
+		EventSource            *string         `json:"event_source"`
+		EmitSuccessEvent       bool            `json:"emit_success_event"`
+		EmitFailureEvent       bool            `json:"emit_failure_event"`
 	}
 	if err := decodeJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	appID, functionID, connectorInstanceID, operation, ok := parseSubscriptionRequestIDs(w, req.ConnectedAppID, req.FunctionDestinationID, req.ConnectorInstanceID, req.Operation)
+	appID, functionID, connectorInstanceID, agentID, operation, ok := parseSubscriptionRequestFields(w, req.ConnectedAppID, req.FunctionDestinationID, req.ConnectorInstanceID, req.AgentID, req.Operation)
 	if !ok {
 		return
 	}
-	result, err := h.subSvc.Create(r.Context(), tenantID, req.DestinationType, appID, functionID, connectorInstanceID, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
+	sessionCreateIfMissing := true
+	if req.SessionCreateIfMissing != nil {
+		sessionCreateIfMissing = *req.SessionCreateIfMissing
+	}
+	result, err := h.subSvc.Create(r.Context(), tenantID, req.DestinationType, appID, functionID, connectorInstanceID, agentID, req.SessionKeyTemplate, sessionCreateIfMissing, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
 	if err != nil {
 		switch {
 		case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams):

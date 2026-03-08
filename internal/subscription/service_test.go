@@ -80,10 +80,21 @@ func (s stubConnectorInstances) GetConnectorInstance(ctx context.Context, tenant
 	return s.getFn(ctx, tenantID, id)
 }
 
+type stubAgents struct {
+	getFn func(context.Context, tenant.ID, uuid.UUID) (agent.Definition, error)
+}
+
+func (s stubAgents) Get(ctx context.Context, tenantID tenant.ID, id uuid.UUID) (agent.Definition, error) {
+	if s.getFn == nil {
+		return agent.Definition{}, agent.ErrNotFound
+	}
+	return s.getFn(ctx, tenantID, id)
+}
+
 func TestCreateRequiresEventType(t *testing.T) {
 	svc := NewService(stubStore{}, stubApps{}, stubFunctions{}, stubConnectorInstances{}, true)
 	appID := uuid.New()
-	_, err := svc.Create(context.Background(), tenant.ID{}, DestinationTypeWebhook, &appID, nil, nil, nil, nil, nil, " ", nil, false, false)
+	_, err := svc.Create(context.Background(), tenant.ID{}, DestinationTypeWebhook, &appID, nil, nil, nil, nil, true, nil, nil, nil, " ", nil, false, false)
 	if !errors.Is(err, ErrInvalidEventType) {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -134,7 +145,7 @@ func TestCreateFunctionSubscription(t *testing.T) {
 		},
 	}, stubConnectorInstances{}, true)
 
-	result, err := svc.Create(context.Background(), tenantID, DestinationTypeFunction, nil, &functionID, nil, nil, nil, nil, "example.event.v1", nil, false, false)
+	result, err := svc.Create(context.Background(), tenantID, DestinationTypeFunction, nil, &functionID, nil, nil, nil, true, nil, nil, nil, "example.event.v1", nil, false, false)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -175,7 +186,7 @@ func TestCreateConnectorSubscription(t *testing.T) {
 		},
 	}, true)
 
-	result, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, params, nil, "resend.email.received.v1", nil, false, false)
+	result, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, nil, nil, true, &operation, params, nil, "resend.email.received.v1", nil, false, false)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -201,7 +212,7 @@ func TestCreateRejectsGlobalConnectorWhenDisabled(t *testing.T) {
 		},
 	}, false)
 
-	_, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, json.RawMessage(`{"text":"hello"}`), nil, "example.event.v1", nil, false, false)
+	_, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, nil, nil, true, &operation, json.RawMessage(`{"text":"hello"}`), nil, "example.event.v1", nil, false, false)
 	if !errors.Is(err, ErrGlobalConnectorNotAllowed) {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -227,7 +238,7 @@ func TestCreateAllowsGlobalLLMConnectorWhenDisabled(t *testing.T) {
 		},
 	}, false)
 
-	_, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, json.RawMessage(`{"prompt":"Hello {{payload.text}}"}`), nil, "example.event.v1", nil, false, false)
+	_, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, nil, nil, true, &operation, json.RawMessage(`{"prompt":"Hello {{payload.text}}"}`), nil, "example.event.v1", nil, false, false)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -261,7 +272,7 @@ func TestCreatePersistsEmitFlags(t *testing.T) {
 		},
 	}, true)
 
-	result, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, json.RawMessage(`{"text":"hello"}`), nil, "example.event.v1", nil, true, true)
+	result, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, nil, nil, true, &operation, json.RawMessage(`{"text":"hello"}`), nil, "example.event.v1", nil, true, true)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -273,43 +284,25 @@ func TestCreatePersistsEmitFlags(t *testing.T) {
 
 func TestCreateLLMAgentSubscription(t *testing.T) {
 	connectorID := uuid.New()
-	functionID := uuid.New()
+	agentID := uuid.New()
 	tenantID := tenant.ID(uuid.New())
 	operation := "agent"
-	params := json.RawMessage(`{
-		"instructions":"Triage inbound support messages",
-		"allowed_tools":["slack.post_message","notify_support"],
-		"tool_bindings":{
-			"notify_support":{
-				"type":"function",
-				"function_destination_id":"` + functionID.String() + `"
-			}
-		},
-		"max_steps":4
-	}`)
+	template := "resend:thread:{{payload.thread_id}}"
 
 	svc := NewService(stubStore{
 		createFn: func(_ context.Context, record Record) (Subscription, error) {
 			if record.Operation == nil || *record.Operation != operation {
 				t.Fatalf("record.Operation = %v", record.Operation)
 			}
-			cfg, err := agent.ParseConfig(record.OperationParams)
-			if err != nil {
-				t.Fatalf("ParseConfig() error = %v", err)
+			if record.AgentID == nil || *record.AgentID != agentID {
+				t.Fatalf("record.AgentID = %v", record.AgentID)
 			}
-			if got, want := len(cfg.AllowedTools), 2; got != want {
-				t.Fatalf("len(AllowedTools) = %d, want %d", got, want)
+			if record.SessionKeyTemplate == nil || *record.SessionKeyTemplate != template {
+				t.Fatalf("record.SessionKeyTemplate = %v", record.SessionKeyTemplate)
 			}
 			return Subscription{ID: record.ID, DestinationType: record.DestinationType, Operation: record.Operation}, nil
 		},
-	}, stubApps{}, stubFunctions{
-		getFn: func(_ context.Context, gotTenantID tenant.ID, gotID uuid.UUID) (functiondestination.Destination, error) {
-			if gotTenantID != tenantID || gotID != functionID {
-				t.Fatal("unexpected function destination lookup")
-			}
-			return functiondestination.Destination{ID: functionID}, nil
-		},
-	}, stubConnectorInstances{
+	}, stubApps{}, stubFunctions{}, stubConnectorInstances{
 		getFn: func(_ context.Context, gotTenantID tenant.ID, gotID uuid.UUID) (connectorinstance.Instance, error) {
 			if gotTenantID != tenantID || gotID != connectorID {
 				t.Fatal("unexpected connector lookup")
@@ -321,17 +314,26 @@ func TestCreateLLMAgentSubscription(t *testing.T) {
 				Config:        json.RawMessage(`{"default_provider":"openai","providers":{"openai":{"api_key":"env:OPENAI_API_KEY"}}}`),
 			}, nil
 		},
-	}, false)
+	}, false, WithAgentStore(stubAgents{
+		getFn: func(_ context.Context, gotTenantID tenant.ID, gotID uuid.UUID) (agent.Definition, error) {
+			if gotTenantID != tenantID || gotID != agentID {
+				t.Fatal("unexpected agent lookup")
+			}
+			return agent.Definition{ID: agentID}, nil
+		},
+	}))
 
-	if _, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &operation, params, nil, "resend.email.received.v1", nil, true, true); err != nil {
+	if _, err := svc.Create(context.Background(), tenantID, DestinationTypeConnector, nil, nil, &connectorID, &agentID, &template, true, &operation, json.RawMessage(`{}`), nil, "resend.email.received.v1", nil, true, true); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 }
 
-func TestCreateRejectsRawFunctionInvokeAgentTool(t *testing.T) {
+func TestCreateRejectsSubscriptionLevelAgentParams(t *testing.T) {
 	connectorID := uuid.New()
+	agentID := uuid.New()
 	tenantID := tenant.ID(uuid.New())
 	operation := "agent"
+	template := "example:{{payload.id}}"
 
 	svc := NewService(stubStore{}, stubApps{}, stubFunctions{}, stubConnectorInstances{
 		getFn: func(_ context.Context, _ tenant.ID, _ uuid.UUID) (connectorinstance.Instance, error) {
@@ -342,7 +344,11 @@ func TestCreateRejectsRawFunctionInvokeAgentTool(t *testing.T) {
 				Config:        json.RawMessage(`{"default_provider":"openai","providers":{"openai":{"api_key":"env:OPENAI_API_KEY"}}}`),
 			}, nil
 		},
-	}, false)
+	}, false, WithAgentStore(stubAgents{
+		getFn: func(_ context.Context, _ tenant.ID, _ uuid.UUID) (agent.Definition, error) {
+			return agent.Definition{ID: agentID}, nil
+		},
+	}))
 
 	_, err := svc.Create(
 		context.Background(),
@@ -351,6 +357,9 @@ func TestCreateRejectsRawFunctionInvokeAgentTool(t *testing.T) {
 		nil,
 		nil,
 		&connectorID,
+		&agentID,
+		&template,
+		true,
 		&operation,
 		json.RawMessage(`{"instructions":"Do work","allowed_tools":["function.invoke"]}`),
 		nil,
@@ -367,7 +376,7 @@ func TestCreateRejectsRawFunctionInvokeAgentTool(t *testing.T) {
 func TestCreateRejectsUnversionedEventType(t *testing.T) {
 	svc := NewService(stubStore{}, stubApps{}, stubFunctions{}, stubConnectorInstances{}, true)
 	appID := uuid.New()
-	_, err := svc.Create(context.Background(), tenant.ID{}, DestinationTypeWebhook, &appID, nil, nil, nil, nil, nil, "example.event", nil, false, false)
+	_, err := svc.Create(context.Background(), tenant.ID{}, DestinationTypeWebhook, &appID, nil, nil, nil, nil, true, nil, nil, nil, "example.event", nil, false, false)
 	if !errors.Is(err, ErrInvalidEventType) {
 		t.Fatalf("Create() error = %v", err)
 	}

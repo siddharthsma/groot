@@ -21,6 +21,8 @@ func TestLLMMetricsLabels(t *testing.T) {
 	metrics.AddGraphNodes(7)
 	metrics.AddGraphEdges(9)
 	metrics.IncGraphLimitExceeded()
+	metrics.SetEditionInfo("community", "single")
+	metrics.SetLicenseInfo("community", true)
 
 	output := metrics.Prometheus()
 	if !strings.Contains(output, `groot_llm_requests_total{provider="openai",operation="generate"} 1`) {
@@ -64,5 +66,11 @@ func TestLLMMetricsLabels(t *testing.T) {
 	}
 	if !strings.Contains(output, `groot_graph_limit_exceeded_total 1`) {
 		t.Fatalf("missing graph limit metric: %s", output)
+	}
+	if !strings.Contains(output, `groot_edition_info{edition="community",tenancy_mode="single"} 1`) {
+		t.Fatalf("missing edition info metric: %s", output)
+	}
+	if !strings.Contains(output, `groot_license_info{edition="community",license_present="true"} 1`) {
+		t.Fatalf("missing license info metric: %s", output)
 	}
 }

@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 
 	"groot/internal/agent"
-	agenttools "groot/internal/agent/tools"
 	"groot/internal/connectedapp"
 	"groot/internal/connectorinstance"
 	"groot/internal/functiondestination"
@@ -22,39 +21,45 @@ import (
 )
 
 type Subscription struct {
-	ID                    uuid.UUID       `json:"id"`
-	TenantID              uuid.UUID       `json:"-"`
-	ConnectedAppID        *uuid.UUID      `json:"connected_app_id,omitempty"`
-	DestinationType       string          `json:"destination_type"`
-	FunctionDestinationID *uuid.UUID      `json:"function_destination_id,omitempty"`
-	ConnectorInstanceID   *uuid.UUID      `json:"connector_instance_id,omitempty"`
-	Operation             *string         `json:"operation,omitempty"`
-	OperationParams       json.RawMessage `json:"operation_params,omitempty"`
-	Filter                json.RawMessage `json:"filter,omitempty"`
-	EventType             string          `json:"event_type"`
-	EventSource           *string         `json:"event_source"`
-	EmitSuccessEvent      bool            `json:"emit_success_event"`
-	EmitFailureEvent      bool            `json:"emit_failure_event"`
-	Status                string          `json:"status"`
-	CreatedAt             time.Time       `json:"-"`
+	ID                     uuid.UUID       `json:"id"`
+	TenantID               uuid.UUID       `json:"-"`
+	ConnectedAppID         *uuid.UUID      `json:"connected_app_id,omitempty"`
+	DestinationType        string          `json:"destination_type"`
+	FunctionDestinationID  *uuid.UUID      `json:"function_destination_id,omitempty"`
+	ConnectorInstanceID    *uuid.UUID      `json:"connector_instance_id,omitempty"`
+	AgentID                *uuid.UUID      `json:"agent_id,omitempty"`
+	SessionKeyTemplate     *string         `json:"session_key_template,omitempty"`
+	SessionCreateIfMissing bool            `json:"session_create_if_missing"`
+	Operation              *string         `json:"operation,omitempty"`
+	OperationParams        json.RawMessage `json:"operation_params,omitempty"`
+	Filter                 json.RawMessage `json:"filter,omitempty"`
+	EventType              string          `json:"event_type"`
+	EventSource            *string         `json:"event_source"`
+	EmitSuccessEvent       bool            `json:"emit_success_event"`
+	EmitFailureEvent       bool            `json:"emit_failure_event"`
+	Status                 string          `json:"status"`
+	CreatedAt              time.Time       `json:"-"`
 }
 
 type Record struct {
-	ID                    uuid.UUID
-	TenantID              tenant.ID
-	ConnectedAppID        *uuid.UUID
-	DestinationType       string
-	FunctionDestinationID *uuid.UUID
-	ConnectorInstanceID   *uuid.UUID
-	Operation             *string
-	OperationParams       json.RawMessage
-	Filter                json.RawMessage
-	EventType             string
-	EventSource           *string
-	EmitSuccessEvent      bool
-	EmitFailureEvent      bool
-	Status                string
-	CreatedAt             time.Time
+	ID                     uuid.UUID
+	TenantID               tenant.ID
+	ConnectedAppID         *uuid.UUID
+	DestinationType        string
+	FunctionDestinationID  *uuid.UUID
+	ConnectorInstanceID    *uuid.UUID
+	AgentID                *uuid.UUID
+	SessionKeyTemplate     *string
+	SessionCreateIfMissing bool
+	Operation              *string
+	OperationParams        json.RawMessage
+	Filter                 json.RawMessage
+	EventType              string
+	EventSource            *string
+	EmitSuccessEvent       bool
+	EmitFailureEvent       bool
+	Status                 string
+	CreatedAt              time.Time
 }
 
 var (
@@ -88,6 +93,10 @@ type Store interface {
 	SetSubscriptionStatus(context.Context, tenant.ID, uuid.UUID, string) (Subscription, error)
 }
 
+type AgentStore interface {
+	Get(context.Context, tenant.ID, uuid.UUID) (agent.Definition, error)
+}
+
 type ConnectedAppStore interface {
 	Get(context.Context, tenant.ID, uuid.UUID) (connectedapp.App, error)
 }
@@ -105,6 +114,7 @@ type Service struct {
 	connectedApps        ConnectedAppStore
 	functionDestinations FunctionDestinationStore
 	connectorInstances   ConnectorInstanceStore
+	agents               AgentStore
 	allowGlobalInstances bool
 	now                  func() time.Time
 	schemaValidator      TemplateValidator
@@ -140,6 +150,12 @@ func WithFilterValidator(validator FilterValidator) Option {
 	}
 }
 
+func WithAgentStore(store AgentStore) Option {
+	return func(s *Service) {
+		s.agents = store
+	}
+}
+
 func NewService(store Store, connectedApps ConnectedAppStore, functionDestinations FunctionDestinationStore, connectorInstances ConnectorInstanceStore, allowGlobalInstances bool, options ...Option) *Service {
 	service := &Service{
 		store:                store,
@@ -160,8 +176,8 @@ type Result struct {
 	Warnings     []string
 }
 
-func (s *Service) Create(ctx context.Context, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Result, error) {
-	record, warnings, err := s.buildRecord(ctx, uuid.New(), "", tenantID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
+func (s *Service) Create(ctx context.Context, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Result, error) {
+	record, warnings, err := s.buildRecord(ctx, uuid.New(), "", tenantID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, agentID, sessionKeyTemplate, sessionCreateIfMissing, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
 	if err != nil {
 		return Result{}, err
 	}
@@ -172,7 +188,7 @@ func (s *Service) Create(ctx context.Context, tenantID tenant.ID, destinationTyp
 	return Result{Subscription: sub, Warnings: warnings}, nil
 }
 
-func (s *Service) Update(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Result, error) {
+func (s *Service) Update(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Result, error) {
 	existing, err := s.store.GetSubscription(ctx, tenantID, subscriptionID)
 	if err != nil {
 		if errors.Is(err, ErrSubscriptionNotFound) {
@@ -180,7 +196,7 @@ func (s *Service) Update(ctx context.Context, tenantID tenant.ID, subscriptionID
 		}
 		return Result{}, fmt.Errorf("get subscription: %w", err)
 	}
-	record, warnings, err := s.buildRecord(ctx, subscriptionID, existing.Status, tenantID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
+	record, warnings, err := s.buildRecord(ctx, subscriptionID, existing.Status, tenantID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, agentID, sessionKeyTemplate, sessionCreateIfMissing, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
 	if err != nil {
 		return Result{}, err
 	}
@@ -202,7 +218,7 @@ func (s *Service) AdminList(ctx context.Context, tenantID *tenant.ID, eventType,
 	return subs, nil
 }
 
-func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus string, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Record, []string, error) {
+func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus string, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Record, []string, error) {
 	trimmedType := strings.TrimSpace(eventType)
 	if trimmedType == "" {
 		return Record{}, nil, ErrInvalidEventType
@@ -236,6 +252,7 @@ func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus 
 	}
 
 	normalizedDestinationType := normalizeDestinationType(destinationType)
+	isAgentSubscription := false
 	switch normalizedDestinationType {
 	case DestinationTypeWebhook:
 		if connectedAppID == nil {
@@ -297,21 +314,44 @@ func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus 
 			}
 		}
 		if instance.ConnectorName == connectorinstance.ConnectorNameLLM && *normalizedOperation == "agent" {
-			agentCfg, err := agent.ParseConfig(normalizedParams)
-			if err != nil {
+			isAgentSubscription = true
+			if agentID == nil {
 				return Record{}, nil, ErrInvalidOperationParams
 			}
-			for _, binding := range agentCfg.ToolBindings {
-				if binding.Type != agent.BindingTypeFunction || binding.FunctionDestinationID == nil {
-					continue
+			if s.agents == nil {
+				return Record{}, nil, ErrInvalidOperationParams
+			}
+			if _, err := s.agents.Get(ctx, tenantID, *agentID); err != nil {
+				if errors.Is(err, agent.ErrNotFound) {
+					return Record{}, nil, ErrInvalidOperationParams
 				}
-				if _, err := s.functionDestinations.Get(ctx, tenantID, *binding.FunctionDestinationID); err != nil {
-					if errors.Is(err, functiondestination.ErrNotFound) {
-						return Record{}, nil, ErrFunctionDestinationNotFound
-					}
-					return Record{}, nil, fmt.Errorf("get function destination: %w", err)
+				return Record{}, nil, fmt.Errorf("get agent: %w", err)
+			}
+			if sessionKeyTemplate == nil || strings.TrimSpace(*sessionKeyTemplate) == "" {
+				return Record{}, nil, ErrInvalidOperationParams
+			}
+			if len(strings.TrimSpace(*sessionKeyTemplate)) > 512 {
+				return Record{}, nil, ErrInvalidOperationParams
+			}
+			if len(operationParams) > 0 && strings.TrimSpace(string(operationParams)) != "" && strings.TrimSpace(string(operationParams)) != "{}" {
+				var params map[string]any
+				if err := json.Unmarshal(operationParams, &params); err != nil {
+					return Record{}, nil, ErrInvalidOperationParams
+				}
+				if len(params) > 0 {
+					return Record{}, nil, ErrInvalidOperationParams
 				}
 			}
+			if s.schemaValidator != nil {
+				if err := s.schemaValidator.ValidateTemplatePaths(ctx, trimmedType, map[string]any{"session_key_template": *sessionKeyTemplate}); err != nil {
+					var templateErr schemas.TemplatePathError
+					if errors.As(err, &templateErr) {
+						return Record{}, nil, ErrInvalidOperationParams
+					}
+					return Record{}, nil, fmt.Errorf("validate session key template: %w", err)
+				}
+			}
+			normalizedParams = json.RawMessage(`{}`)
 		}
 		operation = normalizedOperation
 		operationParams = normalizedParams
@@ -323,22 +363,30 @@ func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus 
 	if strings.TrimSpace(status) == "" {
 		status = StatusActive
 	}
+	if !isAgentSubscription {
+		agentID = nil
+		sessionKeyTemplate = nil
+		sessionCreateIfMissing = true
+	}
 	record := Record{
-		ID:                    id,
-		TenantID:              tenantID,
-		ConnectedAppID:        connectedAppID,
-		DestinationType:       normalizedDestinationType,
-		FunctionDestinationID: functionDestinationID,
-		ConnectorInstanceID:   connectorInstanceID,
-		Operation:             normalizeOperation(operation),
-		OperationParams:       normalizeOperationParams(operationParams),
-		Filter:                normalizedFilter,
-		EventType:             trimmedType,
-		EventSource:           normalizeSource(eventSource),
-		EmitSuccessEvent:      emitSuccessEvent,
-		EmitFailureEvent:      emitFailureEvent,
-		Status:                status,
-		CreatedAt:             s.now(),
+		ID:                     id,
+		TenantID:               tenantID,
+		ConnectedAppID:         connectedAppID,
+		DestinationType:        normalizedDestinationType,
+		FunctionDestinationID:  functionDestinationID,
+		ConnectorInstanceID:    connectorInstanceID,
+		AgentID:                agentID,
+		SessionKeyTemplate:     normalizeSource(sessionKeyTemplate),
+		SessionCreateIfMissing: sessionCreateIfMissing,
+		Operation:              normalizeOperation(operation),
+		OperationParams:        normalizeOperationParams(operationParams),
+		Filter:                 normalizedFilter,
+		EventType:              trimmedType,
+		EventSource:            normalizeSource(eventSource),
+		EmitSuccessEvent:       emitSuccessEvent,
+		EmitFailureEvent:       emitFailureEvent,
+		Status:                 status,
+		CreatedAt:              s.now(),
 	}
 	return record, warnings, nil
 }
@@ -575,33 +623,6 @@ func validateLLMOperation(operation string, operationParams json.RawMessage) (js
 		}
 		return normalized, nil
 	case "agent":
-		cfg, err := agent.ParseConfig(operationParams)
-		if err != nil {
-			return nil, ErrInvalidOperationParams
-		}
-		registry, err := agenttools.NewDefaultRegistry()
-		if err != nil {
-			return nil, ErrInvalidOperationParams
-		}
-		for _, toolName := range cfg.AllowedTools {
-			binding, hasBinding := cfg.ToolBindings[toolName]
-			if hasBinding {
-				switch binding.Type {
-				case agent.BindingTypeConnector:
-					if _, ok := registry.Get(binding.ConnectorName + "." + binding.Operation); !ok {
-						return nil, ErrInvalidOperationParams
-					}
-				case agent.BindingTypeFunction:
-				default:
-					return nil, ErrInvalidOperationParams
-				}
-				continue
-			}
-			def, ok := registry.Get(toolName)
-			if !ok || def.ExecutionKind != agenttools.ExecutionKindConnector {
-				return nil, ErrInvalidOperationParams
-			}
-		}
 		var params map[string]any
 		if err := json.Unmarshal(operationParams, &params); err != nil {
 			return nil, ErrInvalidOperationParams
@@ -609,7 +630,7 @@ func validateLLMOperation(operation string, operationParams json.RawMessage) (js
 		if err := validateTemplates(params); err != nil {
 			return nil, err
 		}
-		normalized, err := json.Marshal(cfg)
+		normalized, err := json.Marshal(params)
 		if err != nil {
 			return nil, ErrInvalidOperationParams
 		}

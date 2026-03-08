@@ -54,6 +54,8 @@ type Metrics struct {
 	graphNodesTotal                        atomic.Uint64
 	graphEdgesTotal                        atomic.Uint64
 	graphLimitExceeded                     atomic.Uint64
+	editionInfo                            atomic.Value
+	licenseInfo                            atomic.Value
 
 	mu                          sync.Mutex
 	connectorDeliveries         map[string]uint64
@@ -66,6 +68,16 @@ type Metrics struct {
 	llmFailures                 map[string]uint64
 	llmLatencyBuckets           map[string][]uint64
 	resultEventsEmitted         map[string]uint64
+}
+
+type EditionInfo struct {
+	Edition     string
+	TenancyMode string
+}
+
+type LicenseInfo struct {
+	Edition        string
+	LicensePresent bool
 }
 
 var llmLatencyBounds = []float64{0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
@@ -183,6 +195,12 @@ func (m *Metrics) AddGraphEdges(n int) {
 	}
 }
 func (m *Metrics) IncGraphLimitExceeded() { m.graphLimitExceeded.Add(1) }
+func (m *Metrics) SetEditionInfo(edition, tenancyMode string) {
+	m.editionInfo.Store(EditionInfo{Edition: edition, TenancyMode: tenancyMode})
+}
+func (m *Metrics) SetLicenseInfo(edition string, present bool) {
+	m.licenseInfo.Store(LicenseInfo{Edition: edition, LicensePresent: present})
+}
 
 func (m *Metrics) IncConnectorDeliveries(connector, operation string) {
 	m.incLabelled(m.connectorDeliveries, connector, operation)
@@ -263,6 +281,12 @@ func (m *Metrics) Prometheus() string {
 	lines = append(lines, m.providerPrometheus("groot_llm_failures_total", m.snapshot(m.llmFailures))...)
 	lines = append(lines, m.resultEventPrometheus("groot_result_events_emitted_total", m.snapshot(m.resultEventsEmitted))...)
 	lines = append(lines, m.llmLatencyPrometheus()...)
+	if info, ok := m.editionInfo.Load().(EditionInfo); ok && info.Edition != "" {
+		lines = append(lines, fmt.Sprintf("groot_edition_info{edition=%q,tenancy_mode=%q} 1", info.Edition, info.TenancyMode))
+	}
+	if info, ok := m.licenseInfo.Load().(LicenseInfo); ok && info.Edition != "" {
+		lines = append(lines, fmt.Sprintf("groot_license_info{edition=%q,license_present=%q} 1", info.Edition, strconv.FormatBool(info.LicensePresent)))
+	}
 	return strings.Join(lines, "\n") + "\n"
 }
 
