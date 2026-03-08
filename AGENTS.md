@@ -76,7 +76,7 @@ Rules:
 
 # Project Structure
 
-cmd/        service entrypoints
+cmd/        service entrypoints only
 internal/   application code
 migrations/ database migrations
 
@@ -84,13 +84,18 @@ Rules:
 - Only entrypoints live in cmd/.
 - All application logic lives in internal/.
 - Packages must have a single clear responsibility.
+- `internal/app` owns process bootstrap/runtime orchestration.
+- `internal/storage` remains one package, but persistence logic should be split across domain files rather than concentrated in one giant file.
 
 ---
 
 # Package Responsibilities
 
+app           Runtime bootstrap, wiring, process lifecycle
 config        Environment configuration loading
+event         Canonical event model and result-event emission
 httpapi       HTTP routing and handlers
+schema        Event schema registry and validation
 storage       Database access
 stream        Kafka client and event publishing
 temporal      Temporal client integration
@@ -108,6 +113,15 @@ Handlers must:
 - avoid business logic
 
 Business logic must live in services, not handlers.
+
+`internal/httpapi` is organized by API surface:
+- `tenant/` for tenant-authenticated routes
+- `admin/` for `/admin/*`
+- `webhooks/` for external ingress
+- `system/` for health, metrics, schemas, and system/bootstrap endpoints
+- `internalapi/` for `/internal/*` runtime-only endpoints
+
+Shared helpers that are surface-neutral belong in `internal/httpapi/common/`.
 
 ---
 
@@ -149,6 +163,8 @@ If a migration is added/changed, README must be updated with any operational imp
 # Kafka Rules
 
 Kafka must be accessed through internal/stream.
+
+The canonical event model lives in `internal/event`.
 
 Do not access Kafka directly from other packages.
 

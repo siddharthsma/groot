@@ -11,7 +11,7 @@ import (
 
 	"groot/internal/config"
 	"groot/internal/delivery"
-	"groot/internal/stream"
+	eventpkg "groot/internal/event"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
 )
@@ -44,8 +44,8 @@ type QueryResult struct {
 }
 
 type Store interface {
-	GetEventForTenant(context.Context, tenant.ID, uuid.UUID) (stream.Event, error)
-	ListEvents(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]stream.Event, error)
+	GetEventForTenant(context.Context, tenant.ID, uuid.UUID) (eventpkg.Event, error)
+	ListEvents(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]eventpkg.Event, error)
 	ListSubscriptions(context.Context, tenant.ID) ([]subscription.Subscription, error)
 	GetSubscriptionByID(context.Context, uuid.UUID) (subscription.Subscription, error)
 	CreateDeliveryJob(context.Context, delivery.JobRecord) (bool, error)
@@ -205,7 +205,7 @@ func (s *Service) ReplayQuery(ctx context.Context, tenantID tenant.ID, req Query
 	return QueryResult{EventsScanned: eventsScanned, JobsCreated: jobsCreated}, nil
 }
 
-func (s *Service) createReplayJobs(ctx context.Context, event stream.Event, matches []subscription.Subscription) (int, error) {
+func (s *Service) createReplayJobs(ctx context.Context, event eventpkg.Event, matches []subscription.Subscription) (int, error) {
 	jobsCreated := 0
 	for _, sub := range matches {
 		created, err := s.store.CreateDeliveryJob(ctx, delivery.JobRecord{
@@ -231,7 +231,7 @@ func (s *Service) createReplayJobs(ctx context.Context, event stream.Event, matc
 	return jobsCreated, nil
 }
 
-func matchingSubscriptions(event stream.Event, subs []subscription.Subscription, only *uuid.UUID) []subscription.Subscription {
+func matchingSubscriptions(event eventpkg.Event, subs []subscription.Subscription, only *uuid.UUID) []subscription.Subscription {
 	result := make([]subscription.Subscription, 0, len(subs))
 	for _, sub := range subs {
 		if only != nil && sub.ID != *only {

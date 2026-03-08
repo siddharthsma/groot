@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+
+	eventpkg "groot/internal/event"
 )
 
 const EventsTopic = "events"
@@ -83,7 +85,7 @@ func (c *Client) EnsureTopic(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) PublishEvent(ctx context.Context, event Event) error {
+func (c *Client) PublishEvent(ctx context.Context, event eventpkg.Event) error {
 	payload, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("marshal event: %w", err)

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -15,24 +16,25 @@ import (
 
 	"github.com/google/uuid"
 
+	"groot/internal/agent"
 	"groot/internal/apikey"
 	iauth "groot/internal/auth"
 	"groot/internal/connectedapp"
 	"groot/internal/connectorinstance"
-	slackconnector "groot/internal/connectors/inbound/slack"
-	stripeconnector "groot/internal/connectors/inbound/stripe"
-	"groot/internal/connectors/resend"
+	"groot/internal/connectors/catalog"
+	"groot/internal/connectors/providers/resend"
+	slackconnector "groot/internal/connectors/providers/slack"
+	stripeconnector "groot/internal/connectors/providers/stripe"
 	"groot/internal/delivery"
 	"groot/internal/edition"
-	"groot/internal/eventquery"
+	eventpkg "groot/internal/event"
 	"groot/internal/functiondestination"
 	"groot/internal/graph"
 	"groot/internal/inboundroute"
 	"groot/internal/ingest"
 	"groot/internal/observability"
 	"groot/internal/replay"
-	"groot/internal/schemas"
-	"groot/internal/stream"
+	schemapkg "groot/internal/schema"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
 )
@@ -123,28 +125,28 @@ func (s stubAuditService) AuditForTenant(ctx context.Context, tenantID tenant.ID
 }
 
 type stubEventService struct {
-	ingestFn func(context.Context, ingest.Request) (stream.Event, error)
+	ingestFn func(context.Context, ingest.Request) (eventpkg.Event, error)
 }
 
-func (s stubEventService) Ingest(ctx context.Context, req ingest.Request) (stream.Event, error) {
+func (s stubEventService) Ingest(ctx context.Context, req ingest.Request) (eventpkg.Event, error) {
 	return s.ingestFn(ctx, req)
 }
 
 type stubEventQueryService struct {
-	listFn      func(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]eventquery.Event, error)
-	adminListFn func(context.Context, tenant.ID, string, *time.Time, *time.Time, int, bool) ([]eventquery.AdminEvent, error)
-	adminGetFn  func(context.Context, uuid.UUID, bool) (eventquery.AdminEvent, error)
+	listFn      func(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]eventpkg.ListEvent, error)
+	adminListFn func(context.Context, tenant.ID, string, *time.Time, *time.Time, int, bool) ([]eventpkg.AdminEvent, error)
+	adminGetFn  func(context.Context, uuid.UUID, bool) (eventpkg.AdminEvent, error)
 }
 
-func (s stubEventQueryService) List(ctx context.Context, tenantID tenant.ID, eventType, source string, from, to *time.Time, limit int) ([]eventquery.Event, error) {
+func (s stubEventQueryService) List(ctx context.Context, tenantID tenant.ID, eventType, source string, from, to *time.Time, limit int) ([]eventpkg.ListEvent, error) {
 	return s.listFn(ctx, tenantID, eventType, source, from, to, limit)
 }
 
-func (s stubEventQueryService) AdminList(ctx context.Context, tenantID tenant.ID, eventType string, from, to *time.Time, limit int, includePayload bool) ([]eventquery.AdminEvent, error) {
+func (s stubEventQueryService) AdminList(ctx context.Context, tenantID tenant.ID, eventType string, from, to *time.Time, limit int, includePayload bool) ([]eventpkg.AdminEvent, error) {
 	return s.adminListFn(ctx, tenantID, eventType, from, to, limit, includePayload)
 }
 
-func (s stubEventQueryService) AdminGet(ctx context.Context, eventID uuid.UUID, includePayload bool) (eventquery.AdminEvent, error) {
+func (s stubEventQueryService) AdminGet(ctx context.Context, eventID uuid.UUID, includePayload bool) (eventpkg.AdminEvent, error) {
 	return s.adminGetFn(ctx, eventID, includePayload)
 }
 
@@ -315,13 +317,25 @@ type stubSlackService struct {
 }
 
 type stubSchemaService struct {
-	listFn func(context.Context) ([]schemas.Schema, error)
-	getFn  func(context.Context, string) (schemas.Schema, error)
+	listFn func(context.Context) ([]schemapkg.Schema, error)
+	getFn  func(context.Context, string) (schemapkg.Schema, error)
+}
+
+type stubProviderCatalogService struct {
+	listFn           func(context.Context) ([]catalog.ProviderSummary, error)
+	getFn            func(context.Context, string) (catalog.ProviderDetail, error)
+	listOperationsFn func(context.Context, string) ([]catalog.OperationCatalog, error)
+	listSchemasFn    func(context.Context, string) ([]catalog.SchemaCatalog, error)
+	getConfigFn      func(context.Context, string) (catalog.ConfigCatalog, error)
 }
 
 type stubGraphService struct {
 	topologyFn  func(context.Context, graph.TopologyRequest) (graph.Topology, error)
 	executionFn func(context.Context, uuid.UUID, graph.ExecutionRequest) (graph.ExecutionGraph, error)
+}
+
+type stubAgentToolService struct {
+	executeFn func(context.Context, agent.ToolExecutionRequest) (agent.ToolExecutionResult, error)
 }
 
 func (s stubStripeService) Enable(ctx context.Context, tenantID tenant.ID, stripeAccountID string, webhookSecret string) (uuid.UUID, error) {
@@ -336,12 +350,32 @@ func (s stubSlackService) HandleEvents(ctx context.Context, rawBody []byte, head
 	return s.handleEventsFn(ctx, rawBody, headers)
 }
 
-func (s stubSchemaService) List(ctx context.Context) ([]schemas.Schema, error) {
+func (s stubSchemaService) List(ctx context.Context) ([]schemapkg.Schema, error) {
 	return s.listFn(ctx)
 }
 
-func (s stubSchemaService) Get(ctx context.Context, fullName string) (schemas.Schema, error) {
+func (s stubSchemaService) Get(ctx context.Context, fullName string) (schemapkg.Schema, error) {
 	return s.getFn(ctx, fullName)
+}
+
+func (s stubProviderCatalogService) List(ctx context.Context) ([]catalog.ProviderSummary, error) {
+	return s.listFn(ctx)
+}
+
+func (s stubProviderCatalogService) Get(ctx context.Context, name string) (catalog.ProviderDetail, error) {
+	return s.getFn(ctx, name)
+}
+
+func (s stubProviderCatalogService) ListOperations(ctx context.Context, name string) ([]catalog.OperationCatalog, error) {
+	return s.listOperationsFn(ctx, name)
+}
+
+func (s stubProviderCatalogService) ListSchemas(ctx context.Context, name string) ([]catalog.SchemaCatalog, error) {
+	return s.listSchemasFn(ctx, name)
+}
+
+func (s stubProviderCatalogService) GetConfig(ctx context.Context, name string) (catalog.ConfigCatalog, error) {
+	return s.getConfigFn(ctx, name)
 }
 
 func (s stubGraphService) BuildTopology(ctx context.Context, req graph.TopologyRequest) (graph.Topology, error) {
@@ -350,6 +384,10 @@ func (s stubGraphService) BuildTopology(ctx context.Context, req graph.TopologyR
 
 func (s stubGraphService) BuildExecution(ctx context.Context, eventID uuid.UUID, req graph.ExecutionRequest) (graph.ExecutionGraph, error) {
 	return s.executionFn(ctx, eventID, req)
+}
+
+func (s stubAgentToolService) ExecuteTool(ctx context.Context, req agent.ToolExecutionRequest) (agent.ToolExecutionResult, error) {
+	return s.executeFn(ctx, req)
 }
 
 func (s stubDeliveryService) List(ctx context.Context, tenantID tenant.ID, status string, subscriptionID, eventID *uuid.UUID, limit int) ([]delivery.Job, error) {
@@ -604,14 +642,14 @@ func TestCreateEvent(t *testing.T) {
 			},
 		},
 		EventSvc: stubEventService{
-			ingestFn: func(_ context.Context, req ingest.Request) (stream.Event, error) {
+			ingestFn: func(_ context.Context, req ingest.Request) (eventpkg.Event, error) {
 				if req.TenantID != tenantID {
 					t.Fatalf("req.TenantID = %s", req.TenantID)
 				}
 				if string(req.Payload) != `{"ok":true}` {
 					t.Fatalf("req.Payload = %s", req.Payload)
 				}
-				return stream.Event{EventID: eventID, TenantID: tenantID, Type: req.Type, Source: req.Source, Payload: json.RawMessage(`{"ok":true}`)}, nil
+				return eventpkg.Event{EventID: eventID, TenantID: tenantID, Type: req.Type, Source: req.Source, Payload: json.RawMessage(`{"ok":true}`)}, nil
 			},
 		},
 	})
@@ -1028,8 +1066,8 @@ func TestListSchemas(t *testing.T) {
 	handler := NewHandler(Options{
 		Logger: testLogger(),
 		Schemas: stubSchemaService{
-			listFn: func(context.Context) ([]schemas.Schema, error) {
-				return []schemas.Schema{{FullName: "resend.email.received.v1", EventType: "resend.email.received", Version: 1, Source: "resend"}}, nil
+			listFn: func(context.Context) ([]schemapkg.Schema, error) {
+				return []schemapkg.Schema{{FullName: "resend.email.received.v1", EventType: "resend.email.received", Version: 1, Source: "resend"}}, nil
 			},
 		},
 	})
@@ -1050,8 +1088,8 @@ func TestGetSchema(t *testing.T) {
 	handler := NewHandler(Options{
 		Logger: testLogger(),
 		Schemas: stubSchemaService{
-			getFn: func(context.Context, string) (schemas.Schema, error) {
-				return schemas.Schema{FullName: "resend.email.received.v1", SchemaJSON: json.RawMessage(`{"type":"object"}`)}, nil
+			getFn: func(context.Context, string) (schemapkg.Schema, error) {
+				return schemapkg.Schema{FullName: "resend.email.received.v1", SchemaJSON: json.RawMessage(`{"type":"object"}`)}, nil
 			},
 		},
 	})
@@ -1062,6 +1100,82 @@ func TestGetSchema(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"schema":{"type":"object"}`) {
 		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestListProviders(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/providers", nil)
+	rec := httptest.NewRecorder()
+
+	NewHandler(Options{
+		Logger: testLogger(),
+		ProviderCatalog: stubProviderCatalogService{
+			listFn: func(context.Context) ([]catalog.ProviderSummary, error) {
+				return []catalog.ProviderSummary{{
+					Name:                "slack",
+					SupportsTenantScope: true,
+					SupportsGlobalScope: true,
+					HasInbound:          true,
+					OperationCount:      2,
+					SchemaCount:         7,
+				}}, nil
+			},
+		},
+	}).ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusOK; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+	if !strings.Contains(rec.Body.String(), `"name":"slack"`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestGetProviderConfig(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/providers/slack/config", nil)
+	rec := httptest.NewRecorder()
+
+	NewHandler(Options{
+		Logger: testLogger(),
+		ProviderCatalog: stubProviderCatalogService{
+			getConfigFn: func(context.Context, string) (catalog.ConfigCatalog, error) {
+				return catalog.ConfigCatalog{
+					Fields: []catalog.ConfigFieldCatalog{{
+						Name:     "bot_token",
+						Required: true,
+						Secret:   true,
+					}},
+				}, nil
+			},
+		},
+	}).ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusOK; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+	if strings.Contains(rec.Body.String(), `"config"`) {
+		t.Fatalf("unexpected wrapper body = %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"secret":true`) {
+		t.Fatalf("body = %s", rec.Body.String())
+	}
+}
+
+func TestGetProviderNotFound(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/providers/nope", nil)
+	rec := httptest.NewRecorder()
+
+	NewHandler(Options{
+		Logger: testLogger(),
+		ProviderCatalog: stubProviderCatalogService{
+			getFn: func(context.Context, string) (catalog.ProviderDetail, error) {
+				return catalog.ProviderDetail{}, sql.ErrNoRows
+			},
+		},
+	}).ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusNotFound; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
 	}
 }
 
@@ -1329,5 +1443,37 @@ func TestAdminExecutionGraphTooLarge(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "graph_too_large") {
 		t.Fatalf("body = %q", rec.Body.String())
+	}
+}
+
+func TestInternalAgentRuntimeRouteRequiresAuth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/internal/agent-runtime/tool-calls", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+
+	handler := NewHandler(Options{
+		Logger:                   testLogger(),
+		AgentRuntimeSharedSecret: "runtime-secret",
+		AgentTools: stubAgentToolService{
+			executeFn: func(context.Context, agent.ToolExecutionRequest) (agent.ToolExecutionResult, error) {
+				t.Fatal("unexpected tool execution")
+				return agent.ToolExecutionResult{}, nil
+			},
+		},
+	})
+
+	handler.ServeHTTP(rec, req)
+	if got, want := rec.Code, http.StatusUnauthorized; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
+	}
+}
+
+func TestUnknownRouteReturnsNotFound(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/does-not-exist", nil)
+	rec := httptest.NewRecorder()
+
+	NewHandler(Options{Logger: testLogger()}).ServeHTTP(rec, req)
+
+	if got, want := rec.Code, http.StatusNotFound; got != want {
+		t.Fatalf("status = %d, want %d", got, want)
 	}
 }

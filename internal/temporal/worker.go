@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"fmt"
+	"strings"
 
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
@@ -12,8 +13,12 @@ import (
 	"groot/internal/temporal/workflows"
 )
 
-func NewWorker(c client.Client, deps activities.Dependencies) worker.Worker {
-	w := worker.New(c, workflows.TaskQueueName, worker.Options{})
+func NewWorker(c client.Client, taskQueue string, deps activities.Dependencies) worker.Worker {
+	taskQueue = strings.TrimSpace(taskQueue)
+	if taskQueue == "" {
+		taskQueue = workflows.DefaultTaskQueueName
+	}
+	w := worker.New(c, taskQueue, worker.Options{})
 	w.RegisterWorkflowWithOptions(workflows.DeliveryWorkflow, workflow.RegisterOptions{Name: workflows.WorkflowName})
 	w.RegisterWorkflowWithOptions(workflows.AgentWorkflow, workflow.RegisterOptions{Name: workflows.AgentWorkflowName})
 	activitySet := activities.New(deps)

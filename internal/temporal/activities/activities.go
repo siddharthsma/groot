@@ -25,14 +25,17 @@ import (
 	"groot/internal/connectedapp"
 	"groot/internal/connectorinstance"
 	"groot/internal/connectors/outbound"
-	llmconnector "groot/internal/connectors/outbound/llm"
-	notionconnector "groot/internal/connectors/outbound/notion"
-	resendconnector "groot/internal/connectors/outbound/resend"
-	slackconnector "groot/internal/connectors/outbound/slack"
+	"groot/internal/connectors/provider"
+	_ "groot/internal/connectors/providers/builtin"
+	llmconnector "groot/internal/connectors/providers/llm"
+	notionconnector "groot/internal/connectors/providers/notion"
+	resendconnector "groot/internal/connectors/providers/resend"
+	slackconnector "groot/internal/connectors/providers/slack"
+	"groot/internal/connectors/registry"
 	"groot/internal/delivery"
-	resultevents "groot/internal/events"
+	"groot/internal/event"
+	eventpkg "groot/internal/event"
 	"groot/internal/functiondestination"
-	"groot/internal/stream"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
 )
@@ -56,7 +59,7 @@ type Dependencies struct {
 	NotionAPIBaseURL string
 	NotionAPIVersion string
 	LLM              config.LLMConfig
-	ResultEmitter    *resultevents.Emitter
+	ResultEmitter    *event.Emitter
 	Metrics          Metrics
 	Logger           *slog.Logger
 	AgentRuntime     *agentruntime.Client
@@ -71,7 +74,7 @@ type Store interface {
 	GetConnectorInstance(context.Context, uuid.UUID, uuid.UUID) (connectorinstance.Instance, error)
 	GetTenantConnectorInstanceByName(context.Context, uuid.UUID, string) (connectorinstance.Instance, error)
 	GetGlobalConnectorInstanceByName(context.Context, string) (connectorinstance.Instance, error)
-	GetEvent(context.Context, uuid.UUID) (stream.Event, error)
+	GetEvent(context.Context, uuid.UUID) (eventpkg.Event, error)
 	SetDeliveryJobAttempt(context.Context, uuid.UUID, int) error
 	MarkDeliveryJobSucceeded(context.Context, uuid.UUID, time.Time, *string, *int) error
 	MarkDeliveryJobRetryableFailure(context.Context, uuid.UUID, string, *int) error
@@ -94,8 +97,8 @@ type AgentManager interface {
 type Activities struct {
 	store           Store
 	httpClient      *http.Client
-	connectors      map[string]outbound.Connector
-	resultEmitter   *resultevents.Emitter
+	providerRuntime provider.RuntimeConfig
+	resultEmitter   *event.Emitter
 	metrics         Metrics
 	logger          *slog.Logger
 	agentRuntime    *agentruntime.Client
@@ -230,16 +233,18 @@ func New(deps Dependencies) *Activities {
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
 	}
-	connectors := map[string]outbound.Connector{
-		slackconnector.ConnectorName:  slackconnector.New(deps.Slack.APIBaseURL, client),
-		notionconnector.ConnectorName: notionconnector.New(deps.NotionAPIBaseURL, deps.NotionAPIVersion, client),
-		resendconnector.ConnectorName: resendconnector.New(deps.Resend, client),
-		llmconnector.ConnectorName:    llmconnector.New(deps.LLM, client),
-	}
 	return &Activities{
-		store:           deps.Store,
-		httpClient:      client,
-		connectors:      connectors,
+		store:      deps.Store,
+		httpClient: client,
+		providerRuntime: provider.RuntimeConfig{
+			Slack:  deps.Slack,
+			Resend: deps.Resend,
+			Notion: config.NotionConfig{
+				APIBaseURL: deps.NotionAPIBaseURL,
+				APIVersion: deps.NotionAPIVersion,
+			},
+			LLM: deps.LLM,
+		},
 		resultEmitter:   deps.ResultEmitter,
 		metrics:         deps.Metrics,
 		logger:          deps.Logger,
@@ -502,8 +507,8 @@ func (a *Activities) InvokeFunction(ctx context.Context, deliveryJobID string, f
 }
 
 func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string, tenantID string, event Event, connectorInstance ConnectorInstance, operation string, operationParams json.RawMessage, attempt int) (ConnectorResult, error) {
-	connector, ok := a.connectors[connectorInstance.ConnectorName]
-	if !ok {
+	executor := registry.GetProvider(connectorInstance.ConnectorName)
+	if executor == nil {
 		return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: fmt.Errorf("unsupported connector: %s", connectorInstance.ConnectorName)})
 	}
 	if a.logger != nil {
@@ -562,17 +567,30 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 	if err != nil {
 		return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: err})
 	}
+	instanceConfig := map[string]any{}
+	if len(connectorInstance.Config) > 0 {
+		if err := json.Unmarshal(connectorInstance.Config, &instanceConfig); err != nil {
+			return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: fmt.Errorf("decode connector config: %w", err)})
+		}
+	}
 
 	startedAt := time.Now()
-	result, err := connector.Execute(ctx, operation, connectorInstance.Config, renderOperationParams(operationParams, event), stream.Event{
-		EventID:    eventID,
-		TenantID:   parsedTenantID,
-		Type:       event.Type,
-		Source:     event.Source,
-		SourceKind: event.SourceKind,
-		ChainDepth: event.ChainDepth,
-		Timestamp:  event.Timestamp,
-		Payload:    event.Payload,
+	result, err := executor.ExecuteOperation(ctx, provider.OperationRequest{
+		Operation: operation,
+		Config:    instanceConfig,
+		Params:    renderOperationParams(operationParams, event),
+		Event: eventpkg.Event{
+			EventID:    eventID,
+			TenantID:   parsedTenantID,
+			Type:       event.Type,
+			Source:     event.Source,
+			SourceKind: event.SourceKind,
+			ChainDepth: event.ChainDepth,
+			Timestamp:  event.Timestamp,
+			Payload:    event.Payload,
+		},
+		HTTPClient: a.httpClient,
+		Runtime:    a.providerRuntime,
 	})
 	if err != nil {
 		if a.metrics != nil {
@@ -727,11 +745,6 @@ func (a *Activities) EmitResultEvent(ctx context.Context, req ResultEventRequest
 		a.logResultEmitterFailure(fmt.Errorf("parse subscription id: %w", err))
 		return nil
 	}
-	inputEventID, err := uuid.Parse(req.InputEventID)
-	if err != nil {
-		a.logResultEmitterFailure(fmt.Errorf("parse input event id: %w", err))
-		return nil
-	}
 	var output map[string]any
 	if len(req.Output) > 0 {
 		if err := json.Unmarshal(req.Output, &output); err != nil {
@@ -761,18 +774,11 @@ func (a *Activities) EmitResultEvent(ctx context.Context, req ResultEventRequest
 		resultEventID = &parsed
 	}
 
-	emitReq := resultevents.EmitRequest{
-		Subscription: subscription.Subscription{
-			ID: subscriptionID,
-		},
-		DeliveryJob: delivery.Job{
-			ID:             deliveryJobID,
-			TenantID:       tenantID,
-			SubscriptionID: subscriptionID,
-			EventID:        inputEventID,
-			ResultEventID:  resultEventID,
-		},
-		InputEvent: stream.Event{
+	emitReq := event.EmitRequest{
+		SubscriptionID:      subscriptionID,
+		DeliveryJobID:       deliveryJobID,
+		ExistingResultEvent: resultEventID,
+		InputEvent: eventpkg.Event{
 			EventID:    eventID,
 			TenantID:   tenantID,
 			Type:       req.InputEvent.Type,
@@ -794,7 +800,7 @@ func (a *Activities) EmitResultEvent(ctx context.Context, req ResultEventRequest
 		SessionKey:     strings.TrimSpace(req.SessionKey),
 	}
 	if strings.TrimSpace(req.ErrorMessage) != "" {
-		emitReq.Error = &resultevents.ResultError{Message: req.ErrorMessage, Type: strings.TrimSpace(req.ErrorType)}
+		emitReq.Error = &event.ResultError{Message: req.ErrorMessage, Type: strings.TrimSpace(req.ErrorType)}
 	}
 	if err := a.resultEmitter.EmitResultEvent(ctx, emitReq); err != nil {
 		a.logResultEmitterFailure(err)

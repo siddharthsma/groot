@@ -11,17 +11,17 @@ import (
 
 	"groot/internal/connectorinstance"
 	"groot/internal/delivery"
-	"groot/internal/schemas"
-	"groot/internal/stream"
+	eventpkg "groot/internal/event"
+	"groot/internal/schema"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
 )
 
 type stubStore struct {
 	connectors  []connectorinstance.Instance
-	schemas     []schemas.Schema
+	schemas     []schema.Schema
 	subs        []subscription.Subscription
-	events      map[uuid.UUID]stream.Event
+	events      map[uuid.UUID]eventpkg.Event
 	jobsByEvent map[uuid.UUID][]delivery.Job
 }
 
@@ -59,16 +59,16 @@ func (s stubStore) ListSubscriptionsAdmin(_ context.Context, tenantID *tenant.ID
 	return out, nil
 }
 
-func (s stubStore) ListEventSchemas(context.Context) ([]schemas.Schema, error) {
+func (s stubStore) ListEventSchemas(context.Context) ([]schema.Schema, error) {
 	return s.schemas, nil
 }
 
-func (s stubStore) GetEvent(_ context.Context, id uuid.UUID) (stream.Event, error) {
-	event, ok := s.events[id]
+func (s stubStore) GetEvent(_ context.Context, id uuid.UUID) (eventpkg.Event, error) {
+	evt, ok := s.events[id]
 	if !ok {
-		return stream.Event{}, errors.New("not found")
+		return eventpkg.Event{}, errors.New("not found")
 	}
-	return event, nil
+	return evt, nil
 }
 
 func (s stubStore) ListDeliveryJobsForEvent(_ context.Context, _ tenant.ID, eventID uuid.UUID, _ int) ([]delivery.Job, error) {
@@ -100,10 +100,10 @@ func TestBuildTopologyEdges(t *testing.T) {
 			Scope:         connectorinstance.ScopeTenant,
 			Status:        "enabled",
 		}},
-		schemas: []schemas.Schema{{
+		schemas: []schema.Schema{{
 			FullName:   "slack.message.posted.v1",
 			Source:     connectorinstance.ConnectorNameSlack,
-			SourceKind: stream.SourceKindExternal,
+			SourceKind: eventpkg.SourceKindExternal,
 			Version:    1,
 		}},
 		subs: []subscription.Subscription{{
@@ -140,7 +140,7 @@ func TestBuildTopologyTenantFilterExcludesOtherTenant(t *testing.T) {
 	subB := subscription.Subscription{ID: uuid.New(), TenantID: tenantB, DestinationType: subscription.DestinationTypeConnector, ConnectorInstanceID: &connectorB.ID, EventType: "slack.message.posted.v1", Status: subscription.StatusActive}
 	service := NewService(stubStore{
 		connectors: []connectorinstance.Instance{connectorA, connectorB},
-		schemas:    []schemas.Schema{{FullName: "slack.message.posted.v1", Source: "slack", Version: 1}},
+		schemas:    []schema.Schema{{FullName: "slack.message.posted.v1", Source: "slack", Version: 1}},
 		subs:       []subscription.Subscription{subA, subB},
 	}, Config{MaxNodes: 10, MaxEdges: 10, DefaultLimit: 10, ExecutionTraversalMaxEvents: 10, ExecutionMaxDepth: 5}, nil, nil)
 
@@ -166,9 +166,9 @@ func TestBuildExecutionChain(t *testing.T) {
 	job2ID := uuid.MustParse("dddddddd-dddd-dddd-dddd-dddddddddddd")
 	now := time.Date(2026, 3, 6, 12, 0, 0, 0, time.UTC)
 	service := NewService(stubStore{
-		events: map[uuid.UUID]stream.Event{
-			rootEventID:   {EventID: rootEventID, TenantID: tenantID, Type: "example.root.v1", Source: "manual", SourceKind: stream.SourceKindExternal, Timestamp: now, Payload: json.RawMessage(`{}`)},
-			resultEventID: {EventID: resultEventID, TenantID: tenantID, Type: "llm.generate.completed.v1", Source: "llm", SourceKind: stream.SourceKindInternal, Timestamp: now.Add(2 * time.Second), Payload: json.RawMessage(`{}`)},
+		events: map[uuid.UUID]eventpkg.Event{
+			rootEventID:   {EventID: rootEventID, TenantID: tenantID, Type: "example.root.v1", Source: "manual", SourceKind: eventpkg.SourceKindExternal, Timestamp: now, Payload: json.RawMessage(`{}`)},
+			resultEventID: {EventID: resultEventID, TenantID: tenantID, Type: "llm.generate.completed.v1", Source: "llm", SourceKind: eventpkg.SourceKindInternal, Timestamp: now.Add(2 * time.Second), Payload: json.RawMessage(`{}`)},
 		},
 		jobsByEvent: map[uuid.UUID][]delivery.Job{
 			rootEventID: {{
@@ -212,10 +212,10 @@ func TestBuildExecutionReturnsPartialWhenDepthExceeded(t *testing.T) {
 	resultEventID := uuid.MustParse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 	thirdEventID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
 	service := NewService(stubStore{
-		events: map[uuid.UUID]stream.Event{
-			rootEventID:   {EventID: rootEventID, TenantID: tenantID, Type: "example.root.v1", Source: "manual", SourceKind: stream.SourceKindExternal, Timestamp: time.Now().UTC()},
-			resultEventID: {EventID: resultEventID, TenantID: tenantID, Type: "llm.generate.completed.v1", Source: "llm", SourceKind: stream.SourceKindInternal, Timestamp: time.Now().UTC()},
-			thirdEventID:  {EventID: thirdEventID, TenantID: tenantID, Type: "slack.posted.v1", Source: "slack", SourceKind: stream.SourceKindInternal, Timestamp: time.Now().UTC()},
+		events: map[uuid.UUID]eventpkg.Event{
+			rootEventID:   {EventID: rootEventID, TenantID: tenantID, Type: "example.root.v1", Source: "manual", SourceKind: eventpkg.SourceKindExternal, Timestamp: time.Now().UTC()},
+			resultEventID: {EventID: resultEventID, TenantID: tenantID, Type: "llm.generate.completed.v1", Source: "llm", SourceKind: eventpkg.SourceKindInternal, Timestamp: time.Now().UTC()},
+			thirdEventID:  {EventID: thirdEventID, TenantID: tenantID, Type: "slack.posted.v1", Source: "slack", SourceKind: eventpkg.SourceKindInternal, Timestamp: time.Now().UTC()},
 		},
 		jobsByEvent: map[uuid.UUID][]delivery.Job{
 			rootEventID: {{

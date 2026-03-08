@@ -11,18 +11,17 @@ import (
 
 	"groot/internal/agent"
 	"groot/internal/config"
-	llmconnector "groot/internal/connectors/outbound/llm"
-	notionconnector "groot/internal/connectors/outbound/notion"
-	resendconnector "groot/internal/connectors/outbound/resend"
-	slackconnector "groot/internal/connectors/outbound/slack"
-	resultevents "groot/internal/events"
-	"groot/internal/stream"
+	llmconnector "groot/internal/connectors/providers/llm"
+	notionconnector "groot/internal/connectors/providers/notion"
+	resendconnector "groot/internal/connectors/providers/resend"
+	slackconnector "groot/internal/connectors/providers/slack"
+	eventpkg "groot/internal/event"
 	"groot/internal/temporal/activities"
 )
 
 const (
-	WorkflowName  = "delivery_workflow"
-	TaskQueueName = "groot-delivery"
+	WorkflowName         = "delivery_workflow"
+	DefaultTaskQueueName = "groot-delivery"
 )
 
 func DeliveryWorkflow(ctx workflow.Context, deliveryJobID string, maxAttempts int, agentConfig config.AgentRuntimeConfig) error {
@@ -151,7 +150,7 @@ func DeliveryWorkflow(ctx workflow.Context, deliveryJobID string, maxAttempts in
 				return fmt.Errorf("mark dead letter: %w", markErr)
 			}
 			if shouldEmitFailure(sub, connectorName, operation) {
-				_ = workflow.ExecuteActivity(ctx, "EmitResultEvent", buildResultEventRequest(job, sub, event, connectorName, operation, resultevents.ResultStatusFailed, nil, nil, message, "dead_letter", externalID, lastStatusCode, agentID, agentSessionID, sessionKey)).Get(ctx, nil)
+				_ = workflow.ExecuteActivity(ctx, "EmitResultEvent", buildResultEventRequest(job, sub, event, connectorName, operation, eventpkg.ResultStatusFailed, nil, nil, message, "dead_letter", externalID, lastStatusCode, agentID, agentSessionID, sessionKey)).Get(ctx, nil)
 			}
 			return nil
 		}
@@ -168,7 +167,7 @@ func DeliveryWorkflow(ctx workflow.Context, deliveryJobID string, maxAttempts in
 		return fmt.Errorf("mark succeeded: %w", err)
 	}
 	if shouldEmitSuccess(sub, connectorName, operation) {
-		_ = workflow.ExecuteActivity(ctx, "EmitResultEvent", buildResultEventRequest(job, sub, event, connectorName, operation, resultevents.ResultStatusSucceeded, successOutput, successToolCalls, "", "", externalID, lastStatusCode, agentID, agentSessionID, sessionKey)).Get(ctx, nil)
+		_ = workflow.ExecuteActivity(ctx, "EmitResultEvent", buildResultEventRequest(job, sub, event, connectorName, operation, eventpkg.ResultStatusSucceeded, successOutput, successToolCalls, "", "", externalID, lastStatusCode, agentID, agentSessionID, sessionKey)).Get(ctx, nil)
 	}
 	return nil
 }
@@ -184,7 +183,7 @@ func nonRetryableTerminal(ctx workflow.Context, deliveryJobID string, attempt in
 		if connectorName == llmconnector.ConnectorName && operation == llmconnector.OperationAgent {
 			sessionKey = agent.ResolveSessionKey(sub.SessionKeyTemplate, activityEventToStreamEvent(event))
 		}
-		_ = workflow.ExecuteActivity(ctx, "EmitResultEvent", buildResultEventRequest(job, sub, event, connectorName, operation, resultevents.ResultStatusFailed, nil, nil, message, "failed", nil, lastStatusCode, sub.AgentID, "", sessionKey)).Get(ctx, nil)
+		_ = workflow.ExecuteActivity(ctx, "EmitResultEvent", buildResultEventRequest(job, sub, event, connectorName, operation, eventpkg.ResultStatusFailed, nil, nil, message, "failed", nil, lastStatusCode, sub.AgentID, "", sessionKey)).Get(ctx, nil)
 	}
 	return temporal.NewNonRetryableApplicationError(message, "delivery_failed", nil)
 }
@@ -258,8 +257,8 @@ func connectorOutput(connectorName, operation string, result activities.Connecto
 	return marshalOutput(payload)
 }
 
-func activityEventToStreamEvent(event activities.Event) stream.Event {
-	return stream.Event{
+func activityEventToStreamEvent(event activities.Event) eventpkg.Event {
+	return eventpkg.Event{
 		EventID:    uuidFromString(event.EventID),
 		TenantID:   uuidFromString(event.TenantID),
 		Type:       event.Type,

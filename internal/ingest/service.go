@@ -10,8 +10,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"groot/internal/schemas"
-	"groot/internal/stream"
+	eventpkg "groot/internal/event"
+	"groot/internal/schema"
 	"groot/internal/tenant"
 )
 
@@ -33,11 +33,11 @@ type Request struct {
 }
 
 type Publisher interface {
-	PublishEvent(context.Context, stream.Event) error
+	PublishEvent(context.Context, eventpkg.Event) error
 }
 
 type EventStore interface {
-	SaveEvent(context.Context, stream.Event) error
+	SaveEvent(context.Context, eventpkg.Event) error
 }
 
 type Logger interface {
@@ -60,7 +60,7 @@ type Service struct {
 }
 
 type SchemaValidator interface {
-	ValidateEvent(context.Context, string, string, string, json.RawMessage) (schemas.Schema, error)
+	ValidateEvent(context.Context, string, string, string, json.RawMessage) (schema.Schema, error)
 }
 
 type Option func(*Service)
@@ -85,18 +85,18 @@ func NewService(publisher Publisher, store EventStore, logger Logger, metrics Me
 	return service
 }
 
-func (s *Service) Ingest(ctx context.Context, req Request) (stream.Event, error) {
+func (s *Service) Ingest(ctx context.Context, req Request) (eventpkg.Event, error) {
 	eventType := strings.TrimSpace(req.Type)
 	if eventType == "" {
-		return stream.Event{}, ErrInvalidType
+		return eventpkg.Event{}, ErrInvalidType
 	}
-	if _, _, ok := schemas.ParseFullName(eventType); !ok {
-		return stream.Event{}, ErrInvalidVersionedType
+	if _, _, ok := schema.ParseFullName(eventType); !ok {
+		return eventpkg.Event{}, ErrInvalidVersionedType
 	}
 
 	source := strings.TrimSpace(req.Source)
 	if source == "" {
-		return stream.Event{}, ErrInvalidSource
+		return eventpkg.Event{}, ErrInvalidSource
 	}
 
 	payload := req.Payload
@@ -104,7 +104,7 @@ func (s *Service) Ingest(ctx context.Context, req Request) (stream.Event, error)
 		payload = json.RawMessage("null")
 	}
 
-	event := stream.Event{
+	evt := eventpkg.Event{
 		EventID:    uuid.New(),
 		TenantID:   req.TenantID,
 		Type:       eventType,
@@ -114,40 +114,40 @@ func (s *Service) Ingest(ctx context.Context, req Request) (stream.Event, error)
 		Timestamp:  s.now(),
 		Payload:    payload,
 	}
-	if event.SourceKind == "" {
-		return stream.Event{}, ErrInvalidSourceKind
+	if evt.SourceKind == "" {
+		return eventpkg.Event{}, ErrInvalidSourceKind
 	}
-	if event.ChainDepth < 0 {
-		return stream.Event{}, ErrInvalidChainDepth
+	if evt.ChainDepth < 0 {
+		return eventpkg.Event{}, ErrInvalidChainDepth
 	}
 	if s.schemas != nil {
-		schema, err := s.schemas.ValidateEvent(ctx, event.Type, event.Source, event.SourceKind, event.Payload)
+		schema, err := s.schemas.ValidateEvent(ctx, evt.Type, evt.Source, evt.SourceKind, evt.Payload)
 		if err != nil {
-			return stream.Event{}, err
+			return eventpkg.Event{}, err
 		}
 		if schema.FullName != "" {
-			event.SchemaFullName = schema.FullName
-			event.SchemaVersion = schema.Version
+			evt.SchemaFullName = schema.FullName
+			evt.SchemaVersion = schema.Version
 		}
 	}
 
-	if err := s.publisher.PublishEvent(ctx, event); err != nil {
+	if err := s.publisher.PublishEvent(ctx, evt); err != nil {
 		if s.log != nil {
 			s.log.Error("event_publish_failed",
-				"event_id", event.EventID.String(),
-				"tenant_id", event.TenantID.String(),
-				"event_type", event.Type,
+				"event_id", evt.EventID.String(),
+				"tenant_id", evt.TenantID.String(),
+				"event_type", evt.Type,
 				"error", err.Error(),
 			)
 		}
-		return stream.Event{}, fmt.Errorf("publish event: %w", err)
+		return eventpkg.Event{}, fmt.Errorf("publish event: %w", err)
 	}
 	if s.metrics != nil {
 		s.metrics.IncEventsPublished()
 	}
 
-	if err := s.store.SaveEvent(ctx, event); err != nil {
-		return stream.Event{}, fmt.Errorf("save event: %w", err)
+	if err := s.store.SaveEvent(ctx, evt); err != nil {
+		return eventpkg.Event{}, fmt.Errorf("save event: %w", err)
 	}
 	if s.metrics != nil {
 		s.metrics.IncEventsRecorded()
@@ -155,21 +155,21 @@ func (s *Service) Ingest(ctx context.Context, req Request) (stream.Event, error)
 
 	if s.log != nil {
 		s.log.Info("event_published",
-			"event_id", event.EventID.String(),
-			"tenant_id", event.TenantID.String(),
-			"event_type", event.Type,
+			"event_id", evt.EventID.String(),
+			"tenant_id", evt.TenantID.String(),
+			"event_type", evt.Type,
 		)
 	}
 
-	return event, nil
+	return evt, nil
 }
 
 func normalizeSourceKind(value string) string {
 	switch strings.TrimSpace(value) {
-	case "", stream.SourceKindExternal:
-		return stream.SourceKindExternal
-	case stream.SourceKindInternal:
-		return stream.SourceKindInternal
+	case "", eventpkg.SourceKindExternal:
+		return eventpkg.SourceKindExternal
+	case eventpkg.SourceKindInternal:
+		return eventpkg.SourceKindInternal
 	default:
 		return ""
 	}

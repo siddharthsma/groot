@@ -13,6 +13,7 @@ func TestLoad(t *testing.T) {
 	t.Setenv("ROUTER_CONSUMER_GROUP", "phase20-router")
 	t.Setenv("TEMPORAL_ADDRESS", "temporal:7233")
 	t.Setenv("TEMPORAL_NAMESPACE", "default")
+	t.Setenv("GROOT_DELIVERY_TASK_QUEUE", "phase20-delivery")
 	t.Setenv("GROOT_SYSTEM_API_KEY", "system-secret")
 	t.Setenv("DELIVERY_MAX_ATTEMPTS", "3")
 	t.Setenv("DELIVERY_INITIAL_INTERVAL", "1s")
@@ -74,6 +75,9 @@ func TestLoad(t *testing.T) {
 	}
 	if got, want := cfg.RouterConsumerGroup, "phase20-router"; got != want {
 		t.Fatalf("RouterConsumerGroup = %q, want %q", got, want)
+	}
+	if got, want := cfg.DeliveryTaskQueue, "phase20-delivery"; got != want {
+		t.Fatalf("DeliveryTaskQueue = %q, want %q", got, want)
 	}
 	if got, want := cfg.DeliveryRetry.MaxAttempts, 3; got != want {
 		t.Fatalf("DeliveryRetry.MaxAttempts = %d, want %d", got, want)

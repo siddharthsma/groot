@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"groot/internal/connectors/registry"
 	"groot/internal/tenant"
 )
 
@@ -72,7 +73,7 @@ type LLMProviderConfig struct {
 }
 
 var (
-	ErrUnsupportedConnector = errors.New("connector_name must be slack, resend, stripe, notion, or llm")
+	ErrUnsupportedConnector = errors.New("connector_name must be a registered provider")
 	ErrDuplicateInstance    = errors.New("connector instance already exists")
 	ErrNotFound             = errors.New("connector instance not found")
 	ErrInvalidConfig        = errors.New("invalid connector config")
@@ -123,20 +124,25 @@ func NewService(store Store, allowGlobalInstances bool, llmDefaultProvider ...st
 
 func (s *Service) Create(ctx context.Context, tenantID *tenant.ID, connectorName string, scope string, config json.RawMessage) (Instance, error) {
 	normalizedName := strings.TrimSpace(connectorName)
-	if !isSupportedConnector(normalizedName) {
+	provider := registry.GetProvider(normalizedName)
+	if provider == nil {
 		return Instance{}, ErrUnsupportedConnector
 	}
 	normalizedScope, tenantValue, ownerTenantID, err := normalizeScope(scope, tenantID)
 	if err != nil {
 		return Instance{}, err
 	}
-	if requiresTenantScope(normalizedName) && normalizedScope != ScopeTenant {
+	spec := provider.Spec()
+	if !spec.SupportsGlobalScope && normalizedScope == ScopeGlobal {
 		return Instance{}, ErrTenantOnlyConnector
+	}
+	if !spec.SupportsTenantScope && normalizedScope == ScopeTenant {
+		return Instance{}, ErrGlobalOnlyConnector
 	}
 	if normalizedScope == ScopeGlobal && normalizedName != ConnectorNameLLM && !s.allowGlobalInstances {
 		return Instance{}, ErrGlobalNotAllowed
 	}
-	if requiresGlobalScope(normalizedName) && normalizedScope != ScopeGlobal {
+	if normalizedName == ConnectorNameLLM && normalizedScope != ScopeGlobal {
 		return Instance{}, ErrGlobalOnlyConnector
 	}
 
@@ -213,21 +219,23 @@ func (s *Service) AdminUpsert(ctx context.Context, id uuid.UUID, tenantID *tenan
 	}
 
 	normalizedName := strings.TrimSpace(connectorName)
-	if !isSupportedConnector(normalizedName) {
+	p := registry.GetProvider(normalizedName)
+	if p == nil {
 		return Instance{}, ErrUnsupportedConnector
 	}
 	normalizedScope, tenantValue, ownerTenantID, err := normalizeScope(scope, tenantID)
 	if err != nil {
 		return Instance{}, err
 	}
-	if requiresTenantScope(normalizedName) && normalizedScope != ScopeTenant {
+	spec := p.Spec()
+	if !spec.SupportsGlobalScope && normalizedScope == ScopeGlobal {
 		return Instance{}, ErrTenantOnlyConnector
+	}
+	if !spec.SupportsTenantScope && normalizedScope == ScopeTenant {
+		return Instance{}, ErrGlobalOnlyConnector
 	}
 	if normalizedScope == ScopeGlobal && normalizedName != ConnectorNameLLM && !s.allowGlobalInstances {
 		return Instance{}, ErrGlobalNotAllowed
-	}
-	if requiresGlobalScope(normalizedName) && normalizedScope != ScopeGlobal {
-		return Instance{}, ErrGlobalOnlyConnector
 	}
 	normalizedConfig, err := s.validateConfig(normalizedName, config)
 	if err != nil {
@@ -267,129 +275,32 @@ func (s *Service) validateConfig(connectorName string, config json.RawMessage) (
 	if len(config) == 0 {
 		config = json.RawMessage(`{}`)
 	}
-	switch connectorName {
-	case ConnectorNameSlack:
-		var slackCfg SlackConfig
-		if err := json.Unmarshal(config, &slackCfg); err != nil {
-			return nil, ErrInvalidConfig
+	var decoded map[string]any
+	if err := json.Unmarshal(config, &decoded); err != nil {
+		return nil, ErrInvalidConfig
+	}
+	if connectorName == ConnectorNameLLM {
+		if strings.TrimSpace(anyString(decoded["default_provider"])) == "" && strings.TrimSpace(s.llmDefaultProvider) != "" {
+			decoded["default_provider"] = s.llmDefaultProvider
 		}
-		if strings.TrimSpace(slackCfg.BotToken) == "" {
-			return nil, ErrMissingBotToken
-		}
-		normalized, err := json.Marshal(slackCfg)
-		if err != nil {
-			return nil, ErrInvalidConfig
-		}
-		return normalized, nil
-	case ConnectorNameStripe:
-		var stripeCfg StripeConfig
-		if err := json.Unmarshal(config, &stripeCfg); err != nil {
-			return nil, ErrInvalidConfig
-		}
-		stripeCfg.StripeAccountID = strings.TrimSpace(stripeCfg.StripeAccountID)
-		stripeCfg.WebhookSecret = strings.TrimSpace(stripeCfg.WebhookSecret)
-		if stripeCfg.StripeAccountID == "" {
-			return nil, ErrMissingStripeAccount
-		}
-		if stripeCfg.WebhookSecret == "" {
-			return nil, ErrMissingWebhookSecret
-		}
-		normalized, err := json.Marshal(stripeCfg)
-		if err != nil {
-			return nil, ErrInvalidConfig
-		}
-		return normalized, nil
-	case ConnectorNameNotion:
-		var notionCfg NotionConfig
-		if err := json.Unmarshal(config, &notionCfg); err != nil {
-			return nil, ErrInvalidConfig
-		}
-		notionCfg.IntegrationToken = strings.TrimSpace(notionCfg.IntegrationToken)
-		if notionCfg.IntegrationToken == "" {
-			return nil, ErrMissingNotionToken
-		}
-		normalized, err := json.Marshal(notionCfg)
-		if err != nil {
-			return nil, ErrInvalidConfig
-		}
-		return normalized, nil
-	case ConnectorNameResend:
-		var cfg map[string]any
-		if err := json.Unmarshal(config, &cfg); err != nil {
-			return nil, ErrInvalidConfig
-		}
-		normalized, err := json.Marshal(map[string]any{})
-		if err != nil {
-			return nil, ErrInvalidConfig
-		}
-		return normalized, nil
-	case ConnectorNameLLM:
-		var llmCfg LLMConfig
-		if err := json.Unmarshal(config, &llmCfg); err != nil {
-			return nil, ErrInvalidConfig
-		}
-		if llmCfg.Providers == nil {
-			llmCfg.Providers = map[string]LLMProviderConfig{}
-		}
-		if strings.TrimSpace(llmCfg.DefaultProvider) == "" {
-			llmCfg.DefaultProvider = s.llmDefaultProvider
-		}
-		llmCfg.DefaultProvider = strings.TrimSpace(llmCfg.DefaultProvider)
-		if len(llmCfg.Providers) == 0 {
-			return nil, ErrMissingLLMProviders
-		}
-		for name, provider := range llmCfg.Providers {
-			if !isSupportedLLMProvider(name) {
-				return nil, ErrInvalidConfig
-			}
-			provider.APIKey = strings.TrimSpace(provider.APIKey)
-			if provider.APIKey == "" {
-				return nil, ErrMissingLLMAPIKey
-			}
-			llmCfg.Providers[name] = provider
-		}
-		if _, ok := llmCfg.Providers[llmCfg.DefaultProvider]; !ok {
-			return nil, ErrInvalidLLMProvider
-		}
-		normalized, err := json.Marshal(llmCfg)
-		if err != nil {
-			return nil, ErrInvalidConfig
-		}
-		return normalized, nil
-	default:
+	}
+	provider := registry.GetProvider(connectorName)
+	if provider == nil {
 		return nil, ErrUnsupportedConnector
 	}
-}
-
-func isSupportedConnector(name string) bool {
-	switch name {
-	case ConnectorNameSlack, ConnectorNameResend, ConnectorNameStripe, ConnectorNameNotion, ConnectorNameLLM:
-		return true
-	default:
-		return false
+	if err := provider.ValidateConfig(decoded); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)
 	}
-}
-
-func requiresTenantScope(name string) bool {
-	switch name {
-	case ConnectorNameStripe, ConnectorNameNotion:
-		return true
-	default:
-		return false
+	normalized, err := json.Marshal(decoded)
+	if err != nil {
+		return nil, ErrInvalidConfig
 	}
+	return normalized, nil
 }
 
-func requiresGlobalScope(name string) bool {
-	return name == ConnectorNameLLM || name == ConnectorNameResend
-}
-
-func isSupportedLLMProvider(name string) bool {
-	switch strings.TrimSpace(name) {
-	case "openai", "anthropic":
-		return true
-	default:
-		return false
-	}
+func anyString(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func normalizeScope(scope string, tenantID *tenant.ID) (string, tenant.ID, *tenant.ID, error) {

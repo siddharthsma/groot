@@ -9,14 +9,14 @@ import (
 
 	"github.com/google/uuid"
 
-	"groot/internal/schemas"
+	"groot/internal/schema"
 )
 
 type stubSchemaLookup struct {
-	getFn func(context.Context, string) (schemas.Schema, error)
+	getFn func(context.Context, string) (schema.Schema, error)
 }
 
-func (s stubSchemaLookup) Get(ctx context.Context, fullName string) (schemas.Schema, error) {
+func (s stubSchemaLookup) Get(ctx context.Context, fullName string) (schema.Schema, error) {
 	return s.getFn(ctx, fullName)
 }
 
@@ -34,8 +34,8 @@ func TestEvaluateNestedFilter(t *testing.T) {
 
 func TestValidateAgainstSchemaRejectsInvalidPathAndOp(t *testing.T) {
 	service := NewService(stubSchemaLookup{
-		getFn: func(context.Context, string) (schemas.Schema, error) {
-			return schemas.Schema{
+		getFn: func(context.Context, string) (schema.Schema, error) {
+			return schema.Schema{
 				ID:         uuid.New(),
 				FullName:   "payments.created.v1",
 				SchemaJSON: json.RawMessage(`{"type":"object","additionalProperties":false,"properties":{"currency":{"type":"string"},"amount":{"type":"number"}}}`),
@@ -57,8 +57,8 @@ func TestValidateAgainstSchemaRejectsInvalidPathAndOp(t *testing.T) {
 
 func TestValidateAllowsMissingSchemaWithWarning(t *testing.T) {
 	service := NewService(stubSchemaLookup{
-		getFn: func(context.Context, string) (schemas.Schema, error) {
-			return schemas.Schema{}, sql.ErrNoRows
+		getFn: func(context.Context, string) (schema.Schema, error) {
+			return schema.Schema{}, sql.ErrNoRows
 		},
 	})
 	normalized, warnings, err := service.Validate(context.Background(), "example.event.v1", json.RawMessage(`{"path":"payload.currency","op":"==","value":"usd"}`))

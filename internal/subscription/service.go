@@ -15,8 +15,9 @@ import (
 	"groot/internal/agent"
 	"groot/internal/connectedapp"
 	"groot/internal/connectorinstance"
+	"groot/internal/connectors/registry"
 	"groot/internal/functiondestination"
-	"groot/internal/schemas"
+	"groot/internal/schema"
 	"groot/internal/tenant"
 )
 
@@ -223,7 +224,7 @@ func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus 
 	if trimmedType == "" {
 		return Record{}, nil, ErrInvalidEventType
 	}
-	if _, _, ok := schemas.ParseFullName(trimmedType); !ok {
+	if _, _, ok := schema.ParseFullName(trimmedType); !ok {
 		return Record{}, nil, ErrInvalidEventType
 	}
 	var warnings []string
@@ -305,7 +306,7 @@ func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus 
 			var templateValue any
 			if err := json.Unmarshal(normalizedParams, &templateValue); err == nil {
 				if err := s.schemaValidator.ValidateTemplatePaths(ctx, trimmedType, templateValue); err != nil {
-					var templateErr schemas.TemplatePathError
+					var templateErr schema.TemplatePathError
 					if errors.As(err, &templateErr) {
 						return Record{}, nil, ErrInvalidOperationParams
 					}
@@ -344,7 +345,7 @@ func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus 
 			}
 			if s.schemaValidator != nil {
 				if err := s.schemaValidator.ValidateTemplatePaths(ctx, trimmedType, map[string]any{"session_key_template": *sessionKeyTemplate}); err != nil {
-					var templateErr schemas.TemplatePathError
+					var templateErr schema.TemplatePathError
 					if errors.As(err, &templateErr) {
 						return Record{}, nil, ErrInvalidOperationParams
 					}
@@ -547,8 +548,40 @@ func validateConnectorOperation(instance connectorinstance.Instance, operation s
 	case connectorinstance.ConnectorNameLLM:
 		return validateLLMOperation(operation, operationParams)
 	default:
+		return validateCustomProviderOperation(instance.ConnectorName, operation, operationParams)
+	}
+}
+
+func validateCustomProviderOperation(connectorName string, operation string, operationParams json.RawMessage) (json.RawMessage, error) {
+	registered := registry.GetProvider(connectorName)
+	if registered == nil {
 		return nil, ErrInvalidOperation
 	}
+	allowed := false
+	for _, spec := range registered.Spec().Operations {
+		if strings.TrimSpace(spec.Name) == operation {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return nil, ErrInvalidOperation
+	}
+	if len(operationParams) == 0 {
+		return json.RawMessage(`{}`), nil
+	}
+	var decoded any
+	if err := json.Unmarshal(operationParams, &decoded); err != nil {
+		return nil, ErrInvalidOperationParams
+	}
+	if err := validateTemplates(decoded); err != nil {
+		return nil, err
+	}
+	normalized, err := json.Marshal(decoded)
+	if err != nil {
+		return nil, ErrInvalidOperationParams
+	}
+	return normalized, nil
 }
 
 func validateLLMOperation(operation string, operationParams json.RawMessage) (json.RawMessage, error) {

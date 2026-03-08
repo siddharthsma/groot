@@ -15,7 +15,7 @@ import (
 	agenttools "groot/internal/agent/tools"
 	"groot/internal/connectorinstance"
 	"groot/internal/connectors/outbound"
-	"groot/internal/stream"
+	eventpkg "groot/internal/event"
 )
 
 type AgentToolTarget struct {
@@ -307,7 +307,7 @@ func buildAgentFunctionEvent(event Event, toolName string, args json.RawMessage)
 		TenantID:   event.TenantID,
 		Type:       "llm.agent.tool_call.v1",
 		Source:     "llm",
-		SourceKind: stream.SourceKindInternal,
+		SourceKind: eventpkg.SourceKindInternal,
 		ChainDepth: event.ChainDepth,
 		Timestamp:  event.Timestamp,
 		Payload:    payload,

@@ -11,32 +11,38 @@ import (
 )
 
 type Config struct {
-	HTTPAddr             string
-	Edition              edition.Runtime
-	License              edition.LicenseConfig
-	CommunityTenantName  string
-	PostgresDSN          string
-	KafkaBrokers         []string
-	RouterConsumerGroup  string
-	TemporalAddress      string
-	TemporalNamespace    string
-	Auth                 AuthConfig
-	Admin                AdminConfig
-	Audit                AuditConfig
-	DeliveryRetry        DeliveryRetryConfig
-	Agent                AgentConfig
-	AgentRuntime         AgentRuntimeConfig
-	Replay               ReplayConfig
-	MaxChainDepth        int
-	AllowGlobalInstances bool
-	SystemAPIKey         string
-	Stripe               StripeConfig
-	Resend               ResendConfig
-	Slack                SlackConfig
-	Notion               NotionConfig
-	LLM                  LLMConfig
-	Schema               SchemaConfig
-	Graph                GraphConfig
+	HTTPAddr                string
+	Edition                 edition.Runtime
+	License                 edition.LicenseConfig
+	CommunityTenantName     string
+	ProviderPluginDir       string
+	ProviderTrustedKeysPath string
+	ProviderInstalledPath   string
+	ProviderCacheDir        string
+	ProviderRegistryURL     string
+	PostgresDSN             string
+	KafkaBrokers            []string
+	RouterConsumerGroup     string
+	TemporalAddress         string
+	TemporalNamespace       string
+	DeliveryTaskQueue       string
+	Auth                    AuthConfig
+	Admin                   AdminConfig
+	Audit                   AuditConfig
+	DeliveryRetry           DeliveryRetryConfig
+	Agent                   AgentConfig
+	AgentRuntime            AgentRuntimeConfig
+	Replay                  ReplayConfig
+	MaxChainDepth           int
+	AllowGlobalInstances    bool
+	SystemAPIKey            string
+	Stripe                  StripeConfig
+	Resend                  ResendConfig
+	Slack                   SlackConfig
+	Notion                  NotionConfig
+	LLM                     LLMConfig
+	Schema                  SchemaConfig
+	Graph                   GraphConfig
 }
 
 type DeliveryRetryConfig struct {
@@ -159,6 +165,23 @@ func Load() (Config, error) {
 	}
 	cfg.License = loadLicenseConfig()
 	cfg.CommunityTenantName = strings.TrimSpace(os.Getenv("COMMUNITY_TENANT_NAME"))
+	cfg.ProviderPluginDir = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_PLUGIN_DIR"))
+	if cfg.ProviderPluginDir == "" {
+		cfg.ProviderPluginDir = "providers/plugins"
+	}
+	cfg.ProviderTrustedKeysPath = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_TRUSTED_KEYS_PATH"))
+	if cfg.ProviderTrustedKeysPath == "" {
+		cfg.ProviderTrustedKeysPath = "providers/trusted_keys.json"
+	}
+	cfg.ProviderInstalledPath = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_INSTALLED_PATH"))
+	if cfg.ProviderInstalledPath == "" {
+		cfg.ProviderInstalledPath = "providers/installed.json"
+	}
+	cfg.ProviderCacheDir = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_CACHE_DIR"))
+	if cfg.ProviderCacheDir == "" {
+		cfg.ProviderCacheDir = "providers/cache"
+	}
+	cfg.ProviderRegistryURL = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_REGISTRY_URL"))
 	if cfg.HTTPAddr, err = requiredEnv("GROOT_HTTP_ADDR"); err != nil {
 		return Config{}, err
 	}
@@ -180,6 +203,10 @@ func Load() (Config, error) {
 	}
 	if cfg.TemporalNamespace, err = requiredEnv("TEMPORAL_NAMESPACE"); err != nil {
 		return Config{}, err
+	}
+	cfg.DeliveryTaskQueue = strings.TrimSpace(os.Getenv("GROOT_DELIVERY_TASK_QUEUE"))
+	if cfg.DeliveryTaskQueue == "" {
+		cfg.DeliveryTaskQueue = "groot-delivery"
 	}
 	cfg.RouterConsumerGroup = strings.TrimSpace(os.Getenv("ROUTER_CONSUMER_GROUP"))
 	if cfg.RouterConsumerGroup == "" {

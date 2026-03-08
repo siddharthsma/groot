@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"strings"
 
-	"groot/internal/schemas"
+	"groot/internal/schema"
 )
 
 const WarningSchemaMissing = "schema_missing_for_event_type"
 
 type SchemaLookup interface {
-	Get(context.Context, string) (schemas.Schema, error)
+	Get(context.Context, string) (schema.Schema, error)
 }
 
 type Service struct {

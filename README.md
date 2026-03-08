@@ -8,6 +8,22 @@ Groot is an event hub that now supports three runtime editions from the same cod
 
 Phase 22 adds edition enforcement, Community bootstrap-tenant guardrails, and distribution packaging alongside the Phase 20 checkpoint harness.
 
+Terminology used in the codebase and API:
+
+- Connector: a provider implementation such as Slack, Stripe, Notion, Resend, or LLM
+- Connector Instance: a configured tenant-scoped or global runtime integration
+- Connected App: the older/simple outbound destination abstraction retained for the `/connected-apps` API
+
+The provider framework that backs connectors is documented in:
+
+- `docs/providers/overview.md`
+- `docs/providers/authoring.md`
+- `docs/providers/testing.md`
+- `docs/providers/examples.md`
+- `docs/providers/plugins.md`
+- `docs/providers/packages.md`
+- `docs/providers/generated/`
+
 ## Stack
 
 - Go
@@ -51,11 +67,17 @@ The service reads all runtime configuration from environment variables.
 | `GROOT_LICENSE_PUBLIC_KEY_PATH` | Optional override path for the Ed25519 license verification public key | unset |
 | `GROOT_LICENSE_ENFORCE_SIGNATURE` | Verify the signature on any provided license file | `true` |
 | `GROOT_HTTP_ADDR` | HTTP listen address | `:8081` |
+| `GROOT_PROVIDER_PLUGIN_DIR` | Directory of compiled provider plugins (`.so`) loaded at startup | `providers/plugins` |
+| `GROOT_PROVIDER_TRUSTED_KEYS_PATH` | JSON file containing trusted Ed25519 publisher public keys for provider package installation | `providers/trusted_keys.json` |
+| `GROOT_PROVIDER_INSTALLED_PATH` | JSON metadata file tracking installed provider packages | `providers/installed.json` |
+| `GROOT_PROVIDER_CACHE_DIR` | Cache directory for verified `.grootpkg` archives | `providers/cache` |
+| `GROOT_PROVIDER_REGISTRY_URL` | Optional provider registry index URL used by `groot provider install <name>` | unset |
 | `POSTGRES_DSN` | PostgreSQL connection string | `postgres://groot:groot@postgres:5432/groot?sslmode=disable` |
 | `KAFKA_BROKERS` | Comma-separated Kafka brokers | `kafka:19092` |
 | `ROUTER_CONSUMER_GROUP` | Kafka consumer group used by the in-process router | `groot-router` |
 | `TEMPORAL_ADDRESS` | Temporal frontend address | `temporal:7233` |
 | `TEMPORAL_NAMESPACE` | Temporal namespace | `default` |
+| `GROOT_DELIVERY_TASK_QUEUE` | Temporal task queue used by Groot's embedded delivery worker and poller | `groot-delivery` |
 | `GROOT_SYSTEM_API_KEY` | Bearer token for system-only endpoints | `system-secret` |
 | `AUTH_MODE` | Request auth mode: `api_key`, `jwt`, or `mixed` | `api_key` |
 | `API_KEY_HEADER` | Header used for real tenant API keys | `X-API-Key` |
@@ -87,7 +109,7 @@ The service reads all runtime configuration from environment variables.
 | `MAX_REPLAY_EVENTS` | Maximum events or replay job fanout allowed in one replay request | `1000` |
 | `MAX_REPLAY_WINDOW_HOURS` | Maximum replay query window size in hours | `24` |
 | `SCHEMA_VALIDATION_MODE` | Event validation behavior for schema failures: `warn`, `reject`, or `off` | `warn` |
-| `SCHEMA_REGISTRATION_MODE` | Schema registration behavior: `startup` registers bundled schemas on boot, `migrate` skips startup registration | `startup` |
+| `SCHEMA_REGISTRATION_MODE` | Schema registration behavior: `startup` registers core plus provider-declared schemas on boot, `migrate` skips startup registration | `startup` |
 | `SCHEMA_MAX_PAYLOAD_BYTES` | Maximum payload size checked during schema validation | `262144` |
 | `GRAPH_MAX_NODES` | Hard maximum nodes returned by graph construction before `graph_too_large` | `5000` |
 | `GRAPH_MAX_EDGES` | Hard maximum edges returned by graph construction before `graph_too_large` | `20000` |
@@ -129,6 +151,12 @@ The service reads all runtime configuration from environment variables.
 | `DELIVERY_MAX_INTERVAL` | Maximum Temporal retry interval | `5m` |
 
 `RESEND_API_BASE_URL` is optional and defaults to `https://api.resend.com`. It is useful for local bootstrap mocking.
+
+`GROOT_PROVIDER_PLUGIN_DIR` enables Phase 29 and Phase 30 providers. Groot loads every `.so` file in that directory at startup, validates the exported `Provider` symbol, registers plugin-owned schemas, and then exposes the plugin through the normal provider registry and execution path.
+
+`GROOT_PROVIDER_TRUSTED_KEYS_PATH`, `GROOT_PROVIDER_INSTALLED_PATH`, `GROOT_PROVIDER_CACHE_DIR`, and `GROOT_PROVIDER_REGISTRY_URL` are used by the Phase 30 `groot provider ...` installer CLI.
+
+`GROOT_DELIVERY_TASK_QUEUE` is usually safe to leave at its default. It is mainly useful when multiple Groot processes share one Temporal cluster and you need one process to execute only its own delivery workflows.
 
 ## Edition Locking And License Validation
 
@@ -191,12 +219,34 @@ Local reproducible build helpers live in:
 - `make checkpoint-reset`: reset the local PostgreSQL schema from migrations and remove generated audit artifacts
 - `make checkpoint-audit`: run the tagged Phase 20 audit checks and overwrite `artifacts/phase20_audit_report.md`
 - `make checkpoint`: run `checkpoint-fast`, `checkpoint-integration`, and `checkpoint-audit`
+- `go build ./cmd/groot`: build the Phase 30 provider lifecycle CLI
 - `migrations/015_agents.sql` adds internal `agent_runs` and `agent_steps` audit tables used by `llm.agent`
 - `migrations/021_agent_sessions.sql` adds tenant-scoped `agents`, `agent_sessions`, `agent_session_events`, `subscriptions.agent_id`, `subscriptions.session_key_template`, `subscriptions.session_create_if_missing`, and `agent_runs.agent_id` / `agent_runs.agent_session_id`
 - `migrations/016_subscription_filters.sql` adds `subscriptions.filter_json` and a GIN index for payload-based subscription filters
 - `migrations/017_auth_and_audit.sql` adds `api_keys`, `audit_events`, and actor metadata columns on core write tables
 
 Phase 20 integration tests live under `tests/integration` and use local Go mock servers for Slack, Notion, Resend, LLM, function destinations, and JWKS. They assume PostgreSQL, Kafka, and Temporal are already running via `make up`.
+
+## Provider Packages
+
+Phase 30 adds signed provider packages with the `.grootpkg` extension. A package is a tar archive containing:
+
+- `provider/provider.so`
+- `provider/manifest.json`
+- `provider/signature.ed25519`
+
+The `groot` CLI manages provider lifecycle:
+
+```sh
+go build -o ./bin/groot ./cmd/groot
+./bin/groot provider install ./customcrm-1.0.0.grootpkg
+./bin/groot provider install customcrm
+./bin/groot provider list
+./bin/groot provider info customcrm
+./bin/groot provider remove customcrm
+```
+
+Registry installs require `GROOT_PROVIDER_REGISTRY_URL`. All installs require a trusted publisher key file at `GROOT_PROVIDER_TRUSTED_KEYS_PATH`. Verified packages are cached under `GROOT_PROVIDER_CACHE_DIR`, and the active plugin binary is written into `GROOT_PROVIDER_PLUGIN_DIR`.
 
 ## API Endpoints
 
@@ -206,6 +256,11 @@ Phase 20 integration tests live under `tests/integration` and use local Go mock 
 - `GET /health/delivery`: checks PostgreSQL and Temporal for the delivery worker
 - `GET /metrics`: exposes in-memory Prometheus-style counters
 - `GET /system/edition`: unauthenticated edition, license, and capability report
+- `GET /providers`: unauthenticated list of registered providers, including installed plugins and plugin metadata when available
+- `GET /providers/{name}`: unauthenticated provider detail including scope support, operations, schemas, config catalog, and plugin `version` / `publisher` metadata when available
+- `GET /providers/{name}/operations`: unauthenticated provider operation catalog
+- `GET /providers/{name}/schemas`: unauthenticated provider-owned schema catalog
+- `GET /providers/{name}/config`: unauthenticated provider config catalog, returned as the bare config object
 - `GET /schemas`: list registered event schemas
 - `GET /schemas/{full_name}`: fetch one registered event schema body
 - `POST /tenants`: create a tenant and return the generated API key once; Community Edition returns `403 community_edition_restriction`
@@ -488,6 +543,19 @@ Phase 14 extends that flow by:
 - validating external and internal events against JSON Schema with `SCHEMA_VALIDATION_MODE`
 - enforcing versioned event types like `example.event.v1` across ingestion and subscriptions
 - exposing schema lookup APIs at `GET /schemas` and `GET /schemas/{full_name}`
+
+Phase 28 extends that flow by:
+
+- exposing a provider catalog at `GET /providers` and `GET /providers/{name}*`
+- deriving provider metadata from the compiled provider registry instead of hand-maintained docs
+- validating provider-owned schemas against the database schema registry at startup, even when `SCHEMA_REGISTRATION_MODE=migrate`
+- generating committed provider reference docs under `docs/providers/generated/`
+
+Regenerate the committed provider reference docs with:
+
+```sh
+./scripts/generate-provider-docs.sh
+```
 
 Phase 7 extends that flow by:
 

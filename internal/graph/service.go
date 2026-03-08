@@ -13,8 +13,8 @@ import (
 
 	"groot/internal/connectorinstance"
 	"groot/internal/delivery"
-	"groot/internal/schemas"
-	"groot/internal/stream"
+	"groot/internal/event"
+	"groot/internal/schema"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
 )
@@ -22,8 +22,8 @@ import (
 type Store interface {
 	ListConnectorInstancesAdmin(context.Context, *tenant.ID, string, string) ([]connectorinstance.Instance, error)
 	ListSubscriptionsAdmin(context.Context, *tenant.ID, string, string) ([]subscription.Subscription, error)
-	ListEventSchemas(context.Context) ([]schemas.Schema, error)
-	GetEvent(context.Context, uuid.UUID) (stream.Event, error)
+	ListEventSchemas(context.Context) ([]schema.Schema, error)
+	GetEvent(context.Context, uuid.UUID) (event.Event, error)
 	ListDeliveryJobsForEvent(context.Context, tenant.ID, uuid.UUID, int) ([]delivery.Job, error)
 }
 
@@ -82,7 +82,7 @@ func (s *Service) BuildTopology(ctx context.Context, req TopologyRequest) (Topol
 	}
 
 	builder := newBuilder(s.cfg.MaxNodes, s.cfg.MaxEdges)
-	schemaByFullName := make(map[string]schemas.Schema)
+	schemaByFullName := make(map[string]schema.Schema)
 	matchingSchemaSources := make(map[string]struct{})
 	for _, schema := range schemasList {
 		if eventTypePrefix != "" && !strings.HasPrefix(schema.FullName, eventTypePrefix) {
@@ -316,7 +316,7 @@ func (s *Service) BuildExecution(ctx context.Context, eventID uuid.UUID, req Exe
 }
 
 type executionCursor struct {
-	event stream.Event
+	event event.Event
 	depth int
 }
 
@@ -433,7 +433,7 @@ func subscriptionNode(sub subscription.Subscription) Node {
 	}
 }
 
-func eventNode(event stream.Event) Node {
+func eventNode(event event.Event) Node {
 	tenantID := event.TenantID
 	return Node{
 		ID:       eventNodeID(event.EventID),

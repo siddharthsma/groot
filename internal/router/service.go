@@ -11,6 +11,7 @@ import (
 	"github.com/segmentio/kafka-go"
 
 	"groot/internal/delivery"
+	eventpkg "groot/internal/event"
 	"groot/internal/stream"
 	"groot/internal/subscription"
 	"groot/internal/subscriptionfilter"
@@ -86,7 +87,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 }
 
 func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error {
-	var event stream.Event
+	var event eventpkg.Event
 	if err := jsonUnmarshal(msg.Value, &event); err != nil {
 		return fmt.Errorf("decode event message: %w", err)
 	}
@@ -166,6 +167,6 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error 
 	return nil
 }
 
-func jsonUnmarshal(data []byte, event *stream.Event) error {
-	return stream.UnmarshalEvent(data, event)
+func jsonUnmarshal(data []byte, event *eventpkg.Event) error {
+	return eventpkg.UnmarshalEvent(data, event)
 }

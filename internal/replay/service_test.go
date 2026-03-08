@@ -11,23 +11,23 @@ import (
 
 	"groot/internal/config"
 	"groot/internal/delivery"
-	"groot/internal/stream"
+	"groot/internal/event"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
 )
 
 type stubStore struct {
-	getEventForTenantFn   func(context.Context, tenant.ID, uuid.UUID) (stream.Event, error)
-	listEventsFn          func(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]stream.Event, error)
+	getEventForTenantFn   func(context.Context, tenant.ID, uuid.UUID) (event.Event, error)
+	listEventsFn          func(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]event.Event, error)
 	listSubscriptionsFn   func(context.Context, tenant.ID) ([]subscription.Subscription, error)
 	getSubscriptionByIDFn func(context.Context, uuid.UUID) (subscription.Subscription, error)
 	createDeliveryJobFn   func(context.Context, delivery.JobRecord) (bool, error)
 }
 
-func (s stubStore) GetEventForTenant(ctx context.Context, tenantID tenant.ID, eventID uuid.UUID) (stream.Event, error) {
+func (s stubStore) GetEventForTenant(ctx context.Context, tenantID tenant.ID, eventID uuid.UUID) (event.Event, error) {
 	return s.getEventForTenantFn(ctx, tenantID, eventID)
 }
-func (s stubStore) ListEvents(ctx context.Context, tenantID tenant.ID, eventType, source string, from, to *time.Time, limit int) ([]stream.Event, error) {
+func (s stubStore) ListEvents(ctx context.Context, tenantID tenant.ID, eventType, source string, from, to *time.Time, limit int) ([]event.Event, error) {
 	return s.listEventsFn(ctx, tenantID, eventType, source, from, to, limit)
 }
 func (s stubStore) ListSubscriptions(ctx context.Context, tenantID tenant.ID) ([]subscription.Subscription, error) {
@@ -55,8 +55,8 @@ func TestReplayEventCreatesReplayJobs(t *testing.T) {
 	metrics := &stubMetrics{}
 	called := false
 	svc := NewService(stubStore{
-		getEventForTenantFn: func(context.Context, tenant.ID, uuid.UUID) (stream.Event, error) {
-			return stream.Event{EventID: eventID, TenantID: uuid.UUID(tenantID), Type: "example.event.v1", Source: "manual"}, nil
+		getEventForTenantFn: func(context.Context, tenant.ID, uuid.UUID) (event.Event, error) {
+			return event.Event{EventID: eventID, TenantID: uuid.UUID(tenantID), Type: "example.event.v1", Source: "manual"}, nil
 		},
 		listSubscriptionsFn: func(context.Context, tenant.ID) ([]subscription.Subscription, error) {
 			return []subscription.Subscription{{ID: subscriptionID, EventType: "example.event.v1", Status: subscription.StatusActive}}, nil
@@ -85,8 +85,8 @@ func TestReplayQueryRejectsInactiveSubscription(t *testing.T) {
 	from := time.Date(2026, 3, 6, 10, 0, 0, 0, time.UTC)
 	to := from.Add(time.Hour)
 	svc := NewService(stubStore{
-		listEventsFn: func(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]stream.Event, error) {
-			return []stream.Event{}, nil
+		listEventsFn: func(context.Context, tenant.ID, string, string, *time.Time, *time.Time, int) ([]event.Event, error) {
+			return []event.Event{}, nil
 		},
 		getSubscriptionByIDFn: func(context.Context, uuid.UUID) (subscription.Subscription, error) {
 			return subscription.Subscription{ID: subID, TenantID: uuid.UUID(tenantID), Status: subscription.StatusPaused}, nil
@@ -101,8 +101,8 @@ func TestReplayQueryRejectsInactiveSubscription(t *testing.T) {
 
 func TestReplayEventNotFound(t *testing.T) {
 	svc := NewService(stubStore{
-		getEventForTenantFn: func(context.Context, tenant.ID, uuid.UUID) (stream.Event, error) {
-			return stream.Event{}, sql.ErrNoRows
+		getEventForTenantFn: func(context.Context, tenant.ID, uuid.UUID) (event.Event, error) {
+			return event.Event{}, sql.ErrNoRows
 		},
 	}, config.ReplayConfig{MaxEvents: 1000, MaxWindowHours: 24}, nil)
 	_, err := svc.ReplayEvent(context.Background(), tenant.ID(uuid.New()), uuid.New())

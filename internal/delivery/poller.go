@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,9 +17,9 @@ import (
 )
 
 const (
-	WorkflowName   = "delivery_workflow"
-	TaskQueueName  = "groot-delivery"
-	claimBatchSize = 10
+	WorkflowName         = "delivery_workflow"
+	DefaultTaskQueueName = "groot-delivery"
+	claimBatchSize       = 10
 )
 
 type Store interface {
@@ -31,13 +32,14 @@ type WorkflowStarter interface {
 }
 
 type Poller struct {
-	store   Store
-	client  WorkflowStarter
-	logger  *slog.Logger
-	retry   config.DeliveryRetryConfig
-	agent   config.AgentRuntimeConfig
-	metrics Metrics
-	ticker  func(time.Duration) ticker
+	store     Store
+	client    WorkflowStarter
+	logger    *slog.Logger
+	retry     config.DeliveryRetryConfig
+	agent     config.AgentRuntimeConfig
+	taskQueue string
+	metrics   Metrics
+	ticker    func(time.Duration) ticker
 }
 
 type Metrics interface {
@@ -53,15 +55,20 @@ type realTicker struct{ *time.Ticker }
 
 func (t realTicker) C() <-chan time.Time { return t.Ticker.C }
 
-func NewPoller(store Store, temporalClient WorkflowStarter, logger *slog.Logger, retry config.DeliveryRetryConfig, agent config.AgentRuntimeConfig, metrics Metrics) *Poller {
+func NewPoller(store Store, temporalClient WorkflowStarter, logger *slog.Logger, retry config.DeliveryRetryConfig, agent config.AgentRuntimeConfig, taskQueue string, metrics Metrics) *Poller {
+	taskQueue = strings.TrimSpace(taskQueue)
+	if taskQueue == "" {
+		taskQueue = DefaultTaskQueueName
+	}
 	return &Poller{
-		store:   store,
-		client:  temporalClient,
-		logger:  logger,
-		retry:   retry,
-		agent:   agent,
-		metrics: metrics,
-		ticker:  func(d time.Duration) ticker { return realTicker{Ticker: time.NewTicker(d)} },
+		store:     store,
+		client:    temporalClient,
+		logger:    logger,
+		retry:     retry,
+		agent:     agent,
+		taskQueue: taskQueue,
+		metrics:   metrics,
+		ticker:    func(d time.Duration) ticker { return realTicker{Ticker: time.NewTicker(d)} },
 	}
 }
 
@@ -98,7 +105,7 @@ func (p *Poller) pollOnce(ctx context.Context) error {
 
 		_, err := p.client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 			ID:        "delivery-job-" + job.ID.String(),
-			TaskQueue: TaskQueueName,
+			TaskQueue: p.taskQueue,
 			RetryPolicy: &temporal.RetryPolicy{
 				MaximumAttempts:    int32(p.retry.MaxAttempts),
 				InitialInterval:    p.retry.InitialInterval,

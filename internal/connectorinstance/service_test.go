@@ -4,12 +4,95 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
+	"groot/internal/connectors/provider"
+	"groot/internal/connectors/registry"
 	"groot/internal/tenant"
 )
+
+func init() {
+	registerTestProvider(ConnectorNameSlack, true, true)
+	registerTestProvider(ConnectorNameResend, false, true)
+	registerTestProvider(ConnectorNameStripe, true, false)
+	registerTestProvider(ConnectorNameNotion, true, false)
+	registerTestProvider(ConnectorNameLLM, false, true)
+}
+
+type testProvider struct {
+	spec       provider.ProviderSpec
+	validateFn func(map[string]any) error
+}
+
+func (p testProvider) Spec() provider.ProviderSpec { return p.spec }
+func (p testProvider) ValidateConfig(config map[string]any) error {
+	if p.validateFn == nil {
+		return nil
+	}
+	return p.validateFn(config)
+}
+func (p testProvider) ExecuteOperation(context.Context, provider.OperationRequest) (provider.OperationResult, error) {
+	return provider.OperationResult{}, nil
+}
+
+func registerTestProvider(name string, tenantScope, globalScope bool) {
+	if registry.GetProvider(name) != nil {
+		return
+	}
+	validate := func(map[string]any) error { return nil }
+	switch name {
+	case ConnectorNameSlack:
+		validate = func(config map[string]any) error {
+			if strings.TrimSpace(testAnyString(config["bot_token"])) == "" {
+				return ErrMissingBotToken
+			}
+			return nil
+		}
+	case ConnectorNameStripe:
+		validate = func(config map[string]any) error {
+			if strings.TrimSpace(testAnyString(config["stripe_account_id"])) == "" {
+				return ErrMissingStripeAccount
+			}
+			if strings.TrimSpace(testAnyString(config["webhook_secret"])) == "" {
+				return ErrMissingWebhookSecret
+			}
+			return nil
+		}
+	case ConnectorNameNotion:
+		validate = func(config map[string]any) error {
+			if strings.TrimSpace(testAnyString(config["integration_token"])) == "" {
+				return ErrMissingNotionToken
+			}
+			return nil
+		}
+	case ConnectorNameLLM:
+		validate = func(config map[string]any) error {
+			providers, ok := config["providers"].(map[string]any)
+			if !ok || len(providers) == 0 {
+				return ErrMissingLLMProviders
+			}
+			defaultProvider := strings.TrimSpace(testAnyString(config["default_provider"]))
+			if defaultProvider == "" {
+				return ErrInvalidLLMProvider
+			}
+			if _, ok := providers[defaultProvider]; !ok {
+				return ErrInvalidLLMProvider
+			}
+			return nil
+		}
+	}
+	registry.RegisterProvider(testProvider{
+		spec: provider.ProviderSpec{
+			Name:                name,
+			SupportsTenantScope: tenantScope,
+			SupportsGlobalScope: globalScope,
+		},
+		validateFn: validate,
+	})
+}
 
 type stubStore struct {
 	createFn     func(context.Context, Record) (Instance, error)
@@ -55,11 +138,16 @@ func (s stubStore) ListConnectorInstancesAdmin(ctx context.Context, tenantID *te
 	return s.adminListFn(ctx, tenantID, connectorName, scope)
 }
 
+func testAnyString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
 func TestCreateRequiresSlackBotToken(t *testing.T) {
 	svc := NewService(stubStore{}, true)
 	tenantID := tenant.ID(uuid.New())
 	_, err := svc.Create(context.Background(), &tenantID, ConnectorNameSlack, ScopeTenant, json.RawMessage(`{}`))
-	if !errors.Is(err, ErrMissingBotToken) {
+	if !errors.Is(err, ErrInvalidConfig) || !strings.Contains(err.Error(), ErrMissingBotToken.Error()) {
 		t.Fatalf("Create() error = %v", err)
 	}
 }
@@ -94,7 +182,7 @@ func TestCreateRequiresNotionToken(t *testing.T) {
 	svc := NewService(stubStore{}, true)
 	tenantID := tenant.ID(uuid.New())
 	_, err := svc.Create(context.Background(), &tenantID, ConnectorNameNotion, ScopeTenant, json.RawMessage(`{}`))
-	if !errors.Is(err, ErrMissingNotionToken) {
+	if !errors.Is(err, ErrInvalidConfig) || !strings.Contains(err.Error(), ErrMissingNotionToken.Error()) {
 		t.Fatalf("Create() error = %v", err)
 	}
 }

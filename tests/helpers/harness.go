@@ -108,6 +108,7 @@ func (h *Harness) StartAPI(opts HarnessOptions) error {
 		"ROUTER_CONSUMER_GROUP=phase20-router-"+fmt.Sprint(port),
 		"TEMPORAL_ADDRESS=localhost:7233",
 		"TEMPORAL_NAMESPACE=default",
+		"GROOT_DELIVERY_TASK_QUEUE=phase20-delivery-"+fmt.Sprint(port),
 		"GROOT_SYSTEM_API_KEY=system-secret",
 		"AUTH_MODE="+authMode,
 		"API_KEY_HEADER=X-API-Key",

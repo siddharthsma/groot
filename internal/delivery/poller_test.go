@@ -43,7 +43,7 @@ func TestPollOnceStartsWorkflow(t *testing.T) {
 		}, requeueFn: func(context.Context, uuid.UUID, string) error { return nil }},
 		stubStarter{startFn: func(_ context.Context, opts client.StartWorkflowOptions, workflow interface{}, args ...interface{}) (client.WorkflowRun, error) {
 			called = true
-			if opts.TaskQueue != TaskQueueName {
+			if opts.TaskQueue != DefaultTaskQueueName {
 				t.Fatalf("task queue = %q", opts.TaskQueue)
 			}
 			if got, want := opts.RetryPolicy.MaximumAttempts, int32(3); got != want {
@@ -54,6 +54,7 @@ func TestPollOnceStartsWorkflow(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		config.DeliveryRetryConfig{MaxAttempts: 3, InitialInterval: time.Second, MaxInterval: 5 * time.Second},
 		config.AgentRuntimeConfig{Enabled: true, Timeout: 30 * time.Second},
+		DefaultTaskQueueName,
 		nil,
 	)
 	if err := p.pollOnce(context.Background()); err != nil {

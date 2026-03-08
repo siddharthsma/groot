@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
-	"groot/internal/stream"
+	"groot/internal/event"
 )
 
 type Result struct {
@@ -49,5 +49,5 @@ var ErrUnsupportedOperation = errors.New("unsupported connector operation")
 
 type Connector interface {
 	Name() string
-	Execute(context.Context, string, json.RawMessage, json.RawMessage, stream.Event) (Result, error)
+	Execute(context.Context, string, json.RawMessage, json.RawMessage, event.Event) (Result, error)
 }
