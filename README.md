@@ -44,6 +44,28 @@ curl localhost:8081/healthz
 
 `make run` starts the API on the host and automatically uses `localhost` endpoints for PostgreSQL, Kafka, and Temporal unless you override them in the environment.
 
+## Frontend Workspace
+
+Phase 31 adds a standalone Next.js workspace under [ui/](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/ui).
+
+Use it like this:
+
+```sh
+cd ui
+cp .env.example .env
+pnpm install
+pnpm dev
+```
+
+Useful frontend checks:
+
+- `pnpm lint`
+- `pnpm typecheck`
+- `pnpm build`
+- `pnpm test` prints the current placeholder message until frontend tests are added in a later phase
+
+The frontend expects the API at `NEXT_PUBLIC_GROOT_API_BASE_URL=http://localhost:8081` by default so it matches the current local Groot API port.
+
 ## Deployment Modes
 
 - `GROOT_EDITION=internal` with `GROOT_TENANCY_MODE=multi` is the default local development posture.
@@ -220,6 +242,10 @@ Local reproducible build helpers live in:
 - `make checkpoint-audit`: run the tagged Phase 20 audit checks and overwrite `artifacts/phase20_audit_report.md`
 - `make checkpoint`: run `checkpoint-fast`, `checkpoint-integration`, and `checkpoint-audit`
 - `go build ./cmd/groot`: build the Phase 30 provider lifecycle CLI
+- `cd ui && pnpm dev`: start the Phase 31 frontend workspace
+- `cd ui && pnpm lint`: lint the frontend workspace
+- `cd ui && pnpm typecheck`: run TypeScript checks for the frontend workspace
+- `cd ui && pnpm build`: build the frontend workspace
 - `migrations/015_agents.sql` adds internal `agent_runs` and `agent_steps` audit tables used by `llm.agent`
 - `migrations/021_agent_sessions.sql` adds tenant-scoped `agents`, `agent_sessions`, `agent_session_events`, `subscriptions.agent_id`, `subscriptions.session_key_template`, `subscriptions.session_create_if_missing`, and `agent_runs.agent_id` / `agent_runs.agent_session_id`
 - `migrations/016_subscription_filters.sql` adds `subscriptions.filter_json` and a GIN index for payload-based subscription filters

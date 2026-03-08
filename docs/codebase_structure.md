@@ -15,6 +15,7 @@ The repo follows a strict separation of concerns:
 - `migrations/` contains schema evolution, one migration file per milestone.
 - `tests/` contains live integration harnesses and golden scenarios.
 - `docs/` contains phase specs and operational reference material.
+- `ui/` contains the standalone Next.js frontend workspace.
 - `build/`, `deploy/`, and `editions/` hold packaging and distribution notes instead of mixing that material into application packages.
 
 That structure keeps runtime logic, database changes, packaging, tests, and historical design docs from bleeding into each other.
@@ -36,6 +37,7 @@ That structure keeps runtime logic, database changes, packaging, tests, and hist
 ├── sdk/
 ├── scripts/
 ├── artifacts/
+├── ui/
 ├── .env.example
 ├── AGENTS.md
 ├── COMMUNITY_LICENSE.md
@@ -62,6 +64,49 @@ That structure keeps runtime logic, database changes, packaging, tests, and hist
 | `docker-compose.yml` | Default local development stack with Postgres, Kafka, Temporal, Temporal UI, and `groot-api`. | It defines the standard local developer environment for the whole system. |
 | `go.mod` | Module definition and dependency list. | Go tooling expects this at the repo root. |
 | `go.sum` | Dependency checksum lockfile. | Required by Go module resolution and reproducibility. |
+
+## `ui/`
+
+The frontend lives in its own standalone Next.js workspace so Node tooling, lockfiles, and browser-specific build output do not spill into the Go service layout.
+
+This is organized separately on purpose:
+
+- backend runtime code stays in `internal/` and `cmd/`
+- frontend dependency management stays in `ui/`
+- future UI phases can add pages and client-side state without reshaping the backend module
+
+### `ui/` Workspace Layout
+
+| File Or Directory | What It Contains | Why It Is Here |
+| --- | --- | --- |
+| `ui/.env.example` | Frontend-only env template with `NEXT_PUBLIC_GROOT_API_BASE_URL=http://localhost:8081`. | Browser configuration should be explicit and separate from backend env. |
+| `ui/README.md` | Frontend-local usage notes and commands. | Frontend contributors need a quick entrypoint without scanning the full root README. |
+| `ui/package.json` | Frontend scripts and Node dependencies. | This is the standalone app contract for pnpm and Next.js. |
+| `ui/pnpm-lock.yaml` | Locked frontend dependency graph. | Keeps frontend installs deterministic. |
+| `ui/components.json` | shadcn/ui generator configuration and aliases. | shadcn component generation depends on this file. |
+| `ui/next.config.ts` | Next.js workspace configuration. | Framework-specific config belongs with the frontend app. |
+| `ui/postcss.config.mjs` | PostCSS configuration for Tailwind. | Tailwind processing is a frontend-only concern. |
+| `ui/eslint.config.mjs` | Frontend lint configuration. | Frontend linting should stay local to the frontend workspace. |
+| `ui/tsconfig.json` | TypeScript config for the frontend app. | Frontend compilation must stay independent from backend Go tooling. |
+| `ui/app/` | Next.js App Router entrypoints, layout, global CSS, and placeholder routes. | Route-level UI structure belongs in the framework app directory. |
+| `ui/components/ui/` | shadcn/ui generated primitives. | Generated primitives are separated from Groot-specific UI pieces. |
+| `ui/components/layout/` | Shared shell pieces like the sidebar, header, and wrapper. | Layout concerns are reused across routes and should not live inside individual pages. |
+| `ui/components/forms/` | Reusable form scaffolding helpers. | Shared form structure should not be duplicated across routes. |
+| `ui/components/graphs/` | React Flow canvas foundation and Dagre layout helper. | Graph-specific rendering logic is a distinct UI concern. |
+| `ui/components/tables/` | Shared table scaffolding. | Future data-heavy screens need a stable home for reusable table wrappers. |
+| `ui/components/providers/` | Placeholder provider-facing components. | Keeps provider UI separate from generic layout and data primitives. |
+| `ui/components/agents/` | Placeholder agent-facing components. | Reserves a canonical home for agent UI. |
+| `ui/components/events/` | Placeholder event-facing components. | Reserves a canonical home for event browser and replay UI. |
+| `ui/lib/api/` | API client foundation and request types. | Network access should be centralized instead of embedded in React components. |
+| `ui/lib/query/` | React Query client creation and provider wiring. | Server-state setup belongs in one narrow shared layer. |
+| `ui/lib/schemas/` | Frontend validation schemas and zod helpers. | Browser-side validation needs a dedicated home. |
+| `ui/lib/theme/` | Theme tokens and frontend visual constants. | Visual constants should not be scattered through components. |
+| `ui/lib/utils.ts` | Shared utility helpers such as `cn()`. | Small cross-cutting helpers stay in one well-known place. |
+| `ui/hooks/` | React hooks specific to the frontend workspace. | Shared client logic belongs outside pages. |
+| `ui/types/` | Workspace-local TypeScript types. | Shared type definitions need a stable import location. |
+| `ui/styles/` | Reserved frontend-only style assets. | Later UI phases can add style assets without cluttering `app/`. |
+| `ui/tests/` | Reserved frontend test directory. | Later phases can add tests without reorganizing the workspace. |
+| `ui/public/` | Static frontend assets. | Next.js serves these directly. |
 
 ## Deployment Modes And Compose Files
 

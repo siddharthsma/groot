@@ -79,10 +79,12 @@ Rules:
 cmd/        service entrypoints only
 internal/   application code
 migrations/ database migrations
+ui/         standalone frontend workspace
 
 Rules:
 - Only entrypoints live in cmd/.
 - All application logic lives in internal/.
+- Frontend application code lives in `ui/`.
 - Packages must have a single clear responsibility.
 - `internal/app` owns process bootstrap/runtime orchestration.
 - `internal/storage` remains one package, but persistence logic should be split across domain files rather than concentrated in one giant file.
@@ -244,6 +246,12 @@ make run
 make test
 make lint
 make fmt
+
+Frontend workspace:
+cd ui && pnpm dev
+cd ui && pnpm lint
+cd ui && pnpm typecheck
+cd ui && pnpm build
 
 Agents must ensure generated code works with these commands.
 
