@@ -119,6 +119,17 @@ func parsePayloadTokens(key string) ([]string, error) {
 	return tokens, nil
 }
 
+func isAllowedContextToken(key string) bool {
+	switch strings.TrimSpace(key) {
+	case "event_id", "tenant_id", "type", "source", "timestamp",
+		"source.kind", "source.integration", "source.connection_id", "source.connection_name", "source.external_account_id",
+		"lineage.integration", "lineage.connection_id", "lineage.connection_name", "lineage.external_account_id":
+		return true
+	default:
+		return false
+	}
+}
+
 func nextTokenEnd(value string) int {
 	for idx, r := range value {
 		if r == '.' || r == '[' {

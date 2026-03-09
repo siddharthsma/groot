@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"groot/internal/event"
 	"groot/internal/schema"
 )
 
@@ -23,7 +24,7 @@ func (s stubSchemaLookup) Get(ctx context.Context, fullName string) (schema.Sche
 func TestEvaluateNestedFilter(t *testing.T) {
 	filter := json.RawMessage(`{"all":[{"path":"payload.currency","op":"==","value":"usd"},{"any":[{"path":"payload.amount","op":">=","value":100},{"path":"payload.vip","op":"==","value":true}]}]}`)
 	payload := json.RawMessage(`{"currency":"usd","amount":120,"vip":false}`)
-	matched, err := Evaluate(filter, payload)
+	matched, err := Evaluate(filter, event.Event{Payload: payload, Source: event.Source{Kind: event.SourceKindExternal, Integration: "manual"}, SourceKind: event.SourceKindExternal})
 	if err != nil {
 		t.Fatalf("Evaluate() error = %v", err)
 	}

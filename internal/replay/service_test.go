@@ -56,7 +56,7 @@ func TestReplayEventCreatesReplayJobs(t *testing.T) {
 	called := false
 	svc := NewService(stubStore{
 		getEventForTenantFn: func(context.Context, tenant.ID, uuid.UUID) (event.Event, error) {
-			return event.Event{EventID: eventID, TenantID: uuid.UUID(tenantID), Type: "example.event.v1", Source: "manual"}, nil
+			return event.Event{EventID: eventID, TenantID: uuid.UUID(tenantID), Type: "example.event.v1", Source: event.Source{Kind: event.SourceKindExternal, Integration: "manual"}, SourceKind: event.SourceKindExternal}, nil
 		},
 		listSubscriptionsFn: func(context.Context, tenant.ID) ([]subscription.Subscription, error) {
 			return []subscription.Subscription{{ID: subscriptionID, EventType: "example.event.v1", Status: subscription.StatusActive}}, nil

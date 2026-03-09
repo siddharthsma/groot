@@ -10,19 +10,19 @@ Phase 22 adds edition enforcement, Community bootstrap-tenant guardrails, and di
 
 Terminology used in the codebase and API:
 
-- Connector: a provider implementation such as Slack, Stripe, Notion, Resend, or LLM
-- Connector Instance: a configured tenant-scoped or global runtime integration
+- Integration: an implementation such as Slack, Stripe, Notion, Resend, or LLM
+- Connection: a configured tenant-scoped or global runtime integration
 - Connected App: the older/simple outbound destination abstraction retained for the `/connected-apps` API
 
-The provider framework that backs connectors is documented in:
+The integration framework is documented in:
 
-- `docs/providers/overview.md`
-- `docs/providers/authoring.md`
-- `docs/providers/testing.md`
-- `docs/providers/examples.md`
-- `docs/providers/plugins.md`
-- `docs/providers/packages.md`
-- `docs/providers/generated/`
+- `docs/integrations/overview.md`
+- `docs/integrations/authoring.md`
+- `docs/integrations/testing.md`
+- `docs/integrations/examples.md`
+- `docs/integrations/plugins.md`
+- `docs/integrations/packages.md`
+- `docs/integrations/generated/`
 
 ## Stack
 
@@ -89,11 +89,11 @@ The service reads all runtime configuration from environment variables.
 | `GROOT_LICENSE_PUBLIC_KEY_PATH` | Optional override path for the Ed25519 license verification public key | unset |
 | `GROOT_LICENSE_ENFORCE_SIGNATURE` | Verify the signature on any provided license file | `true` |
 | `GROOT_HTTP_ADDR` | HTTP listen address | `:8081` |
-| `GROOT_PROVIDER_PLUGIN_DIR` | Directory of compiled provider plugins (`.so`) loaded at startup | `providers/plugins` |
-| `GROOT_PROVIDER_TRUSTED_KEYS_PATH` | JSON file containing trusted Ed25519 publisher public keys for provider package installation | `providers/trusted_keys.json` |
-| `GROOT_PROVIDER_INSTALLED_PATH` | JSON metadata file tracking installed provider packages | `providers/installed.json` |
-| `GROOT_PROVIDER_CACHE_DIR` | Cache directory for verified `.grootpkg` archives | `providers/cache` |
-| `GROOT_PROVIDER_REGISTRY_URL` | Optional provider registry index URL used by `groot provider install <name>` | unset |
+| `GROOT_INTEGRATION_PLUGIN_DIR` | Directory of compiled integration plugins (`.so`) loaded at startup | `integrations/plugins` |
+| `GROOT_INTEGRATION_TRUSTED_KEYS_PATH` | JSON file containing trusted Ed25519 publisher public keys for integration package installation | `integrations/trusted_keys.json` |
+| `GROOT_INTEGRATION_INSTALLED_PATH` | JSON metadata file tracking installed integration packages | `integrations/installed.json` |
+| `GROOT_INTEGRATION_CACHE_DIR` | Cache directory for verified `.grootpkg` archives | `integrations/cache` |
+| `GROOT_INTEGRATION_REGISTRY_URL` | Optional integration registry index URL used by `groot integration install <name>` | unset |
 | `POSTGRES_DSN` | PostgreSQL connection string | `postgres://groot:groot@postgres:5432/groot?sslmode=disable` |
 | `KAFKA_BROKERS` | Comma-separated Kafka brokers | `kafka:19092` |
 | `ROUTER_CONSUMER_GROUP` | Kafka consumer group used by the in-process router | `groot-router` |
@@ -126,12 +126,12 @@ The service reads all runtime configuration from environment variables.
 | `ADMIN_RATE_LIMIT_RPS` | Global `/admin` token-bucket rate limit | `5` |
 | `AUDIT_ENABLED` | Enable write-path audit events | `true` |
 | `AUDIT_LOG_REQUEST_BODY` | Reserved audit request-body logging flag | `false` |
-| `GROOT_ALLOW_GLOBAL_INSTANCES` | Allow subscriptions to use global connector instances | `true` |
+| `GROOT_ALLOW_GLOBAL_INSTANCES` | Allow subscriptions to use global connections | `true` |
 | `MAX_CHAIN_DEPTH` | Maximum allowed internal event chain depth before Groot stops emitting further result events | `10` |
 | `MAX_REPLAY_EVENTS` | Maximum events or replay job fanout allowed in one replay request | `1000` |
 | `MAX_REPLAY_WINDOW_HOURS` | Maximum replay query window size in hours | `24` |
 | `SCHEMA_VALIDATION_MODE` | Event validation behavior for schema failures: `warn`, `reject`, or `off` | `warn` |
-| `SCHEMA_REGISTRATION_MODE` | Schema registration behavior: `startup` registers core plus provider-declared schemas on boot, `migrate` skips startup registration | `startup` |
+| `SCHEMA_REGISTRATION_MODE` | Schema registration behavior: `startup` registers core plus integration-declared schemas on boot, `migrate` skips startup registration | `startup` |
 | `SCHEMA_MAX_PAYLOAD_BYTES` | Maximum payload size checked during schema validation | `262144` |
 | `GRAPH_MAX_NODES` | Hard maximum nodes returned by graph construction before `graph_too_large` | `5000` |
 | `GRAPH_MAX_EDGES` | Hard maximum edges returned by graph construction before `graph_too_large` | `20000` |
@@ -147,14 +147,14 @@ The service reads all runtime configuration from environment variables.
 | `SLACK_SIGNING_SECRET` | Global Slack Events API signing secret used to verify `POST /webhooks/slack/events` | `slack-signing-secret` |
 | `NOTION_API_BASE_URL` | Base URL for Notion API calls | `https://api.notion.com/v1` |
 | `NOTION_API_VERSION` | Notion-Version header sent with outbound requests | `2022-06-28` |
-| `OPENAI_API_KEY` | OpenAI API key used by the global LLM connector | ` ` |
+| `OPENAI_API_KEY` | OpenAI API key used by the global LLM connection | ` ` |
 | `OPENAI_API_BASE_URL` | Base URL for OpenAI chat completions | `https://api.openai.com/v1` |
-| `ANTHROPIC_API_KEY` | Anthropic API key used by the global LLM connector | ` ` |
+| `ANTHROPIC_API_KEY` | Anthropic API key used by the global LLM connection | ` ` |
 | `ANTHROPIC_API_BASE_URL` | Base URL for Anthropic messages API | `https://api.anthropic.com` |
-| `LLM_DEFAULT_PROVIDER` | Default LLM provider when connector config omits it | `openai` |
+| `LLM_DEFAULT_PROVIDER` | Default LLM integration when connection config omits it | `openai` |
 | `LLM_DEFAULT_CLASSIFY_MODEL` | Default model for `llm.classify` when params omit `model` | `gpt-4o-mini` |
 | `LLM_DEFAULT_EXTRACT_MODEL` | Default model for `llm.extract` when params omit `model` | `gpt-4o-mini` |
-| `LLM_TIMEOUT_SECONDS` | Timeout for one LLM connector execution | `30` |
+| `LLM_TIMEOUT_SECONDS` | Timeout for one LLM connection execution | `30` |
 | `AGENT_MAX_STEPS` | Maximum steps allowed for one `llm.agent` run | `8` |
 | `AGENT_STEP_TIMEOUT_SECONDS` | Per-step Temporal activity timeout for agent LLM/tool work | `30` |
 | `AGENT_TOTAL_TIMEOUT_SECONDS` | Total timeout for one agent child workflow execution | `120` |
@@ -174,11 +174,13 @@ The service reads all runtime configuration from environment variables.
 
 `RESEND_API_BASE_URL` is optional and defaults to `https://api.resend.com`. It is useful for local bootstrap mocking.
 
-`GROOT_PROVIDER_PLUGIN_DIR` enables Phase 29 and Phase 30 providers. Groot loads every `.so` file in that directory at startup, validates the exported `Provider` symbol, registers plugin-owned schemas, and then exposes the plugin through the normal provider registry and execution path.
+`GROOT_INTEGRATION_PLUGIN_DIR` enables Phase 29 and Phase 30 integrations. Groot loads every `.so` file in that directory at startup, validates the exported `Integration` symbol, registers plugin-owned schemas, and then exposes the plugin through the normal integration registry and execution path.
 
-`GROOT_PROVIDER_TRUSTED_KEYS_PATH`, `GROOT_PROVIDER_INSTALLED_PATH`, `GROOT_PROVIDER_CACHE_DIR`, and `GROOT_PROVIDER_REGISTRY_URL` are used by the Phase 30 `groot provider ...` installer CLI.
+`GROOT_INTEGRATION_TRUSTED_KEYS_PATH`, `GROOT_INTEGRATION_INSTALLED_PATH`, `GROOT_INTEGRATION_CACHE_DIR`, and `GROOT_INTEGRATION_REGISTRY_URL` are used by the Phase 30 `groot integration ...` installer CLI.
 
 `GROOT_DELIVERY_TASK_QUEUE` is usually safe to leave at its default. It is mainly useful when multiple Groot processes share one Temporal cluster and you need one process to execute only its own delivery workflows.
+
+Fresh router consumer groups start at the latest Kafka offset. Historical event redelivery is handled through Groot's replay APIs rather than by creating a new consumer group and re-reading the topic from the beginning.
 
 ## Edition Locking And License Validation
 
@@ -237,11 +239,12 @@ Local reproducible build helpers live in:
 - `make migrate`: apply SQL migrations to the local PostgreSQL container
 - `make migrate` is intended to be safely rerunnable against an already-migrated local database
 - `make checkpoint-fast`: run `fmt`, `lint`, and `test`
-- `make checkpoint-integration`: stop the compose `groot-api` service, run tagged Phase 20 integration scenarios against a test-owned API process, then restart the compose API
+- `make checkpoint-integration`: stop the compose `groot-api` service, run the full tagged Go integration suite against a test-owned API process, then restart the compose API
 - `make checkpoint-reset`: reset the local PostgreSQL schema from migrations and remove generated audit artifacts
 - `make checkpoint-audit`: run the tagged Phase 20 audit checks and overwrite `artifacts/phase20_audit_report.md`
 - `make checkpoint`: run `checkpoint-fast`, `checkpoint-integration`, and `checkpoint-audit`
-- `go build ./cmd/groot`: build the Phase 30 provider lifecycle CLI
+- `make checkpoint-system`: comprehensive post-refactor gate that runs `make up`, `make migrate`, `go build ./...`, `go test ./...`, `go vet ./...`, the full tagged integration suite, and the frontend `pnpm lint`, `pnpm typecheck`, `pnpm build`, and `pnpm test` checks
+- `go build ./cmd/groot`: build the Phase 30 integration lifecycle CLI
 - `cd ui && pnpm dev`: start the Phase 31 frontend workspace
 - `cd ui && pnpm lint`: lint the frontend workspace
 - `cd ui && pnpm typecheck`: run TypeScript checks for the frontend workspace
@@ -250,29 +253,30 @@ Local reproducible build helpers live in:
 - `migrations/021_agent_sessions.sql` adds tenant-scoped `agents`, `agent_sessions`, `agent_session_events`, `subscriptions.agent_id`, `subscriptions.session_key_template`, `subscriptions.session_create_if_missing`, and `agent_runs.agent_id` / `agent_runs.agent_session_id`
 - `migrations/016_subscription_filters.sql` adds `subscriptions.filter_json` and a GIN index for payload-based subscription filters
 - `migrations/017_auth_and_audit.sql` adds `api_keys`, `audit_events`, and actor metadata columns on core write tables
+- `migrations/022_phase33_connection_aware_events.sql` adds connection-aware event source and lineage columns to `events`, plus source/lineage indexes and support for multiple same-integration tenant connections
 
-Phase 20 integration tests live under `tests/integration` and use local Go mock servers for Slack, Notion, Resend, LLM, function destinations, and JWKS. They assume PostgreSQL, Kafka, and Temporal are already running via `make up`.
+Phase 20+ integration tests live under `tests/integration` and use local Go mock servers for Slack, Notion, Resend, LLM, function destinations, and JWKS. They assume PostgreSQL, Kafka, and Temporal are already running via `make up`, and `make checkpoint-system` is the recommended full-system verification path after major refactors.
 
-## Provider Packages
+## Integration Packages
 
-Phase 30 adds signed provider packages with the `.grootpkg` extension. A package is a tar archive containing:
+Phase 30 adds signed integration packages with the `.grootpkg` extension. A package is a tar archive containing:
 
-- `provider/provider.so`
-- `provider/manifest.json`
-- `provider/signature.ed25519`
+- `integration/integration.so`
+- `integration/manifest.json`
+- `integration/signature.ed25519`
 
-The `groot` CLI manages provider lifecycle:
+The `groot` CLI manages integration lifecycle:
 
 ```sh
 go build -o ./bin/groot ./cmd/groot
-./bin/groot provider install ./customcrm-1.0.0.grootpkg
-./bin/groot provider install customcrm
-./bin/groot provider list
-./bin/groot provider info customcrm
-./bin/groot provider remove customcrm
+./bin/groot integration install ./customcrm-1.0.0.grootpkg
+./bin/groot integration install customcrm
+./bin/groot integration list
+./bin/groot integration info customcrm
+./bin/groot integration remove customcrm
 ```
 
-Registry installs require `GROOT_PROVIDER_REGISTRY_URL`. All installs require a trusted publisher key file at `GROOT_PROVIDER_TRUSTED_KEYS_PATH`. Verified packages are cached under `GROOT_PROVIDER_CACHE_DIR`, and the active plugin binary is written into `GROOT_PROVIDER_PLUGIN_DIR`.
+Registry installs require `GROOT_INTEGRATION_REGISTRY_URL`. All installs require a trusted publisher key file at `GROOT_INTEGRATION_TRUSTED_KEYS_PATH`. Verified packages are cached under `GROOT_INTEGRATION_CACHE_DIR`, and the active plugin binary is written into `GROOT_INTEGRATION_PLUGIN_DIR`.
 
 ## API Endpoints
 
@@ -282,11 +286,11 @@ Registry installs require `GROOT_PROVIDER_REGISTRY_URL`. All installs require a 
 - `GET /health/delivery`: checks PostgreSQL and Temporal for the delivery worker
 - `GET /metrics`: exposes in-memory Prometheus-style counters
 - `GET /system/edition`: unauthenticated edition, license, and capability report
-- `GET /providers`: unauthenticated list of registered providers, including installed plugins and plugin metadata when available
-- `GET /providers/{name}`: unauthenticated provider detail including scope support, operations, schemas, config catalog, and plugin `version` / `publisher` metadata when available
-- `GET /providers/{name}/operations`: unauthenticated provider operation catalog
-- `GET /providers/{name}/schemas`: unauthenticated provider-owned schema catalog
-- `GET /providers/{name}/config`: unauthenticated provider config catalog, returned as the bare config object
+- `GET /integrations`: unauthenticated list of registered integrations, including installed plugins and plugin metadata when available
+- `GET /integrations/{name}`: unauthenticated integration detail including scope support, operations, schemas, config catalog, and plugin `version` / `publisher` metadata when available
+- `GET /integrations/{name}/operations`: unauthenticated integration operation catalog
+- `GET /integrations/{name}/schemas`: unauthenticated integration-owned schema catalog
+- `GET /integrations/{name}/config`: unauthenticated integration config catalog, returned as the bare config object
 - `GET /schemas`: list registered event schemas
 - `GET /schemas/{full_name}`: fetch one registered event schema body
 - `POST /tenants`: create a tenant and return the generated API key once; Community Edition returns `403 community_edition_restriction`
@@ -295,22 +299,22 @@ Registry installs require `GROOT_PROVIDER_REGISTRY_URL`. All installs require a 
 - `POST /api-keys`: create a tenant-scoped API key and return it once
 - `GET /api-keys`: list tenant API keys
 - `POST /api-keys/{api_key_id}/revoke`: revoke a tenant API key
-- `POST /events`: authenticate with `X-API-Key: groot_<prefix>_<secret>`, with legacy tenant keys still accepted as `Authorization: Bearer <api_key>`, and publish an external event to Kafka using a versioned `type` like `example.event.v1`
-- `GET /events`: list tenant events with optional versioned `type`, `source`, `from`, `to`, and `limit` filters, including `source_kind` and `chain_depth`
+- `POST /events`: authenticate with `X-API-Key: groot_<prefix>_<secret>`, with legacy tenant keys still accepted as `Authorization: Bearer <api_key>`, and publish an external event to Kafka using a versioned `type` like `example.event.v1`; `source` may be a legacy string or a structured object with connection-aware fields
+- `GET /events`: list tenant events with optional versioned `type`, `source`, `from`, `to`, and `limit` filters, including structured `source`, optional `lineage`, `source_kind`, and `chain_depth`
 - `POST /connected-apps`: create a connected app for the authenticated tenant
 - `GET /connected-apps`: list connected apps for the authenticated tenant
 - `POST /functions`: create a function destination for the authenticated tenant and return its secret once
 - `GET /functions`: list function destinations for the authenticated tenant
 - `GET /functions/{function_id}`: fetch one function destination for the authenticated tenant
 - `DELETE /functions/{function_id}`: delete a function destination if no active function subscription references it
-- `POST /connector-instances`: create a tenant connector instance such as Slack
-- `GET /connector-instances`: list tenant-owned and global connector instances without secrets
+- `POST /connections`: create a tenant connection such as Slack
+- `GET /connections`: list tenant-owned and global connections without secrets
 - `POST /agents`, `GET /agents`, `GET /agents/{agent_id}`, `PUT /agents/{agent_id}`, `DELETE /agents/{agent_id}`: manage tenant-scoped agent definitions used by `llm.agent`
 - `GET /agent-sessions`, `GET /agent-sessions/{session_id}`, `POST /agent-sessions/{session_id}/close`: inspect and close persistent agent sessions
 - `POST /routes/inbound`: create a tenant inbound route
 - `GET /routes/inbound`: list tenant inbound routes
 - `GET /system/routes/inbound`: system-authenticated list of all inbound routes
-- `POST /subscriptions`: create a webhook, function, or connector subscription for the authenticated tenant, with optional `emit_success_event`, `emit_failure_event`, and `filter`; `llm.agent` subscriptions also require `agent_id` and `session_key_template`; responses may include `warnings`
+- `POST /subscriptions`: create a webhook, function, or connection subscription for the authenticated tenant, with optional `emit_success_event`, `emit_failure_event`, and `filter`; `llm.agent` subscriptions also require `agent_id` and `session_key_template`; responses may include `warnings`
 - `GET /subscriptions`: list subscriptions for the authenticated tenant
 - `PUT /subscriptions/{subscription_id}`: full replacement update for a tenant subscription, including `filter`
 - `POST /subscriptions/{subscription_id}/pause`: pause a tenant subscription
@@ -321,29 +325,29 @@ Registry installs require `GROOT_PROVIDER_REGISTRY_URL`. All installs require a 
 - `POST /events/{event_id}/replay`: create replay delivery jobs for one stored event
 - `POST /events/replay`: replay stored events in a time window, with optional versioned `type`, `source`, and `subscription_id`
 - `POST /system/resend/bootstrap`: system-authenticated Resend webhook bootstrap
-- `POST /connectors/resend/enable`: tenant-authenticated Resend connector enablement
+- `POST /connectors/resend/enable`: tenant-authenticated Resend connection enablement
 - `POST /webhooks/resend`: inbound Resend webhook endpoint
 - `POST /webhooks/slack/events`: inbound Slack Events API endpoint with HMAC verification and `url_verification` challenge support
-- `POST /connectors/stripe/enable`: tenant-authenticated Stripe connector enablement
+- `POST /connectors/stripe/enable`: tenant-authenticated Stripe connection enablement
 - `POST /webhooks/stripe`: inbound Stripe webhook endpoint with Stripe signature verification
 - `GET /admin/tenants`, `POST /admin/tenants`, `GET /admin/tenants/{tenant_id}`, `PATCH /admin/tenants/{tenant_id}`: operator-only tenant management when `ADMIN_MODE_ENABLED=true`; Community Edition returns `403 community_edition_restriction`
 - `POST /admin/tenants/{tenant_id}/api-keys`, `GET /admin/tenants/{tenant_id}/api-keys`, `POST /admin/tenants/{tenant_id}/api-keys/{api_key_id}/revoke`: operator-only tenant API key management
-- `GET /admin/connector-instances`, `PUT /admin/connector-instances/{id}`: operator-only connector inspection and upsert
+- `GET /admin/connections`, `PUT /admin/connections/{id}`: operator-only connection inspection and upsert
 - `GET /admin/subscriptions`, `POST /admin/tenants/{tenant_id}/subscriptions`: operator-only cross-tenant subscription APIs
 - `GET /admin/events`, `GET /admin/delivery-jobs`, `POST /admin/events/{event_id}/replay`, `POST /admin/events/replay`: operator-only operational APIs with replay safety controls
-- `GET /admin/topology`: operator-only system topology graph with `tenant_id`, `connector_name`, `event_type_prefix`, `include_global`, and `limit`
+- `GET /admin/topology`: operator-only system topology graph with `tenant_id`, `integration_name`, `event_type_prefix`, `include_global`, and `limit`
 - `GET /admin/events/{event_id}/execution-graph`: operator-only execution graph for one stored event with optional `max_depth` and `max_events`
 
 When admin mode is enabled, `/admin/*` responses include `X-Request-Id`. When `ADMIN_ALLOW_VIEW_PAYLOADS=false`, `/admin/events` omits `payload`.
 
-Graph API responses never include event payload bodies. Topology returns connector, event type, and subscription nodes. Execution graphs return event and delivery job nodes, mark traversal-cap results as `partial`, and return `graph_too_large` when node or edge limits are exceeded.
+Graph API responses never include event payload bodies. Topology returns connection, event type, and subscription nodes. Execution graphs return event and delivery job nodes, mark traversal-cap results as `partial`, and return `graph_too_large` when node or edge limits are exceeded.
 
 Phase 21 moves `llm.agent` tool inventory and prompt defaults onto tenant-scoped `agents`. Subscriptions now reference an `agent_id` plus a `session_key_template`, while the actual agent loop runs through the external runtime at `AGENT_RUNTIME_BASE_URL`. Tenant-facing APIs for `agent_runs` and `agent_steps` are still not exposed.
 
 Phase 22 stores the Community bootstrap tenant id in `system_settings.community_bootstrap_tenant_id`. Community startup fails if more than one tenant exists.
 Phase 22 addendum also enforces build-embedded edition locking and optional signed licenses. Community restrictions still apply only to Community Edition. Cloud/Internal builds with a license `max_tenants=1` are restricted operationally by tenant count, not by blanket Community-style `403` responses.
 
-Subscription filters use JSON with `all`, `any`, `not`, or condition objects like `{"path":"payload.amount","op":">=","value":100}`. Phase 16 supports `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `in`, and `exists` on `payload.*` object paths only.
+Subscription filters use JSON with `all`, `any`, `not`, or condition objects like `{"path":"payload.amount","op":">=","value":100}`. Phase 33 supports `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `in`, and `exists` on `payload.*`, `source.*`, and `lineage.*` paths. Supported connection-aware paths include `source.integration`, `source.connection_id`, `source.connection_name`, `source.external_account_id`, and the corresponding `lineage.*` fields for internal result events.
 
 ## Tenant and Event Flow
 
@@ -383,7 +387,7 @@ Publish an event with the returned API key:
 curl -X POST localhost:8081/events \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"type":"example.event.v1","source":"manual","payload":{"hello":"world"}}'
+  -d '{"type":"example.event.v1","source":{"kind":"external","integration":"manual"},"payload":{"hello":"world"}}'
 ```
 
 Create a rotatable tenant API key and use it with `X-API-Key`:
@@ -399,7 +403,16 @@ curl -X POST localhost:8081/events \
   -H 'X-API-Key: groot_<prefix>_<secret>' \
   -H 'X-Actor-Id: ci-bot' \
   -H 'X-Actor-Type: service' \
-  -d '{"type":"example.event.v1","source":"manual","payload":{"hello":"world"}}'
+  -d '{"type":"example.event.v1","source":{"kind":"external","integration":"manual"},"payload":{"hello":"world"}}'
+```
+
+Connection-aware events may include the originating connection directly in the canonical source:
+
+```sh
+curl -X POST localhost:8081/events \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <api_key>' \
+  -d '{"type":"example.event.v1","source":{"kind":"external","integration":"slack","connection_id":"<connection_id>","external_account_id":"T123"},"payload":{"text":"hello"}}'
 ```
 
 Create a connected app and subscription:
@@ -435,62 +448,62 @@ curl -X POST localhost:8081/subscriptions \
   -d '{"destination_type":"function","function_destination_id":"<function_id>","event_type":"example.event.v1","event_source":"manual"}'
 ```
 
-Create a Slack, Notion, Resend, or global LLM connector instance and connector subscription:
+Create a Slack, Notion, Resend, or global LLM connection and connection subscription:
 
 ```sh
-curl -X POST localhost:8081/connector-instances \
+curl -X POST localhost:8081/connections \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"connector_name":"slack","config":{"bot_token":"xoxb-...","default_channel":"#alerts"}}'
+  -d '{"integration_name":"slack","config":{"bot_token":"xoxb-...","default_channel":"#alerts"}}'
 
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<connector_id>","operation":"post_message","operation_params":{"text":"New inbound {{event_id}}"},"event_type":"resend.email.received.v1","event_source":"resend"}'
+  -d '{"destination_type":"connection","connection_id":"<connection_id>","operation":"post_message","operation_params":{"text":"New inbound {{event_id}}"},"event_type":"resend.email.received.v1","event_source":"resend"}'
 
-curl -X POST localhost:8081/connector-instances \
+curl -X POST localhost:8081/connections \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"connector_name":"notion","config":{"integration_token":"secret_xxx"}}'
+  -d '{"integration_name":"notion","config":{"integration_token":"secret_xxx"}}'
 
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<notion_connector_id>","operation":"create_page","operation_params":{"parent_database_id":"database_id","properties":{"Name":{"title":[{"text":{"content":"Event {{event_id}}"}}]}}},"event_type":"stripe.payment_intent.succeeded","event_source":"stripe"}'
+  -d '{"destination_type":"connection","connection_id":"<notion_connection_id>","operation":"create_page","operation_params":{"parent_database_id":"database_id","properties":{"Name":{"title":[{"text":{"content":"Event {{event_id}}"}}]}}},"event_type":"stripe.payment_intent.succeeded.v1","event_source":"stripe"}'
 
-curl -X POST localhost:8081/connector-instances \
+curl -X POST localhost:8081/connections \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer system-secret' \
-  -d '{"connector_name":"llm","scope":"global","config":{"default_provider":"openai","providers":{"openai":{"api_key":"env:OPENAI_API_KEY"},"anthropic":{"api_key":"env:ANTHROPIC_API_KEY"}}}}'
+  -d '{"integration_name":"llm","scope":"global","config":{"default_integration":"openai","integrations":{"openai":{"api_key":"env:OPENAI_API_KEY"},"anthropic":{"api_key":"env:ANTHROPIC_API_KEY"}}}}'
 
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<llm_connector_id>","operation":"generate","operation_params":{"prompt":"Summarize {{payload.text}}","provider":"openai"},"event_type":"example.event.v1","event_source":"manual","emit_success_event":true}'
+  -d '{"destination_type":"connection","connection_id":"<llm_connection_id>","operation":"generate","operation_params":{"prompt":"Summarize {{payload.text}}","integration":"openai"},"event_type":"example.event.v1","event_source":"manual","emit_success_event":true}'
 
 curl -X POST localhost:8081/agents \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"name":"support_agent","instructions":"Handle inbound support emails, notify Slack, and escalate when needed","provider":"openai","model":"gpt-4o-mini","allowed_tools":["slack.post_message","notify_support"],"tool_bindings":{"notify_support":{"type":"function","function_destination_id":"<function_id>"}}}'
+  -d '{"name":"support_agent","instructions":"Handle inbound support emails, notify Slack, and escalate when needed","integration":"openai","model":"gpt-4o-mini","allowed_tools":["slack.post_message","notify_support"],"tool_bindings":{"notify_support":{"type":"function","function_destination_id":"<function_id>"}}}'
 
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<llm_connector_id>","agent_id":"<agent_id>","session_key_template":"resend:thread:{{payload.headers.in_reply_to}}","session_create_if_missing":true,"operation":"agent","operation_params":{},"event_type":"resend.email.received.v1","event_source":"resend","emit_success_event":true,"emit_failure_event":true}'
+  -d '{"destination_type":"connection","connection_id":"<llm_connection_id>","agent_id":"<agent_id>","session_key_template":"resend:thread:{{payload.headers.in_reply_to}}","session_create_if_missing":true,"operation":"agent","operation_params":{},"event_type":"resend.email.received.v1","event_source":"resend","emit_success_event":true,"emit_failure_event":true}'
 ```
 
-Create a global Resend connector and use `send_email`:
+Create a global Resend connection and use `send_email`:
 
 ```sh
-curl -X POST localhost:8081/connector-instances \
+curl -X POST localhost:8081/connections \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer system-secret' \
-  -d '{"connector_name":"resend","scope":"global","config":{}}'
+  -d '{"integration_name":"resend","scope":"global","config":{}}'
 
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<resend_connector_id>","operation":"send_email","operation_params":{"to":"user@example.com","subject":"Notification","text":"Classified {{event_id}}"},"event_type":"llm.classify.completed.v1","event_source":"llm"}'
+  -d '{"destination_type":"connection","connection_id":"<resend_connection_id>","operation":"send_email","operation_params":{"to":"user@example.com","subject":"Notification","text":"Classified {{event_id}}"},"event_type":"llm.classify.completed.v1","event_source":"llm"}'
 ```
 
 Chain Slack thread replies or richer LLM outputs from emitted result events:
@@ -499,23 +512,25 @@ Chain Slack thread replies or richer LLM outputs from emitted result events:
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<slack_connector_id>","operation":"post_message","operation_params":{"text":"Summary ready for {{event_id}}"},"event_type":"llm.generate.completed.v1","event_source":"llm"}'
+  -d '{"destination_type":"connection","connection_id":"<slack_connection_id>","operation":"post_message","operation_params":{"text":"Summary ready for {{event_id}}"},"event_type":"llm.generate.completed.v1","event_source":"llm"}'
 
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<slack_connector_id>","operation":"create_thread_reply","operation_params":{"channel":"C123","thread_ts":"{{payload.ts}}","text":"Summary: {{payload.output.text}}"},"event_type":"slack.message.created.v1","event_source":"slack"}'
+  -d '{"destination_type":"connection","connection_id":"<slack_connection_id>","operation":"create_thread_reply","operation_params":{"channel":"C123","thread_ts":"{{payload.ts}}","text":"Summary: {{payload.output.text}}"},"event_type":"slack.message.created.v1","event_source":"slack"}'
 
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<llm_connector_id>","operation":"classify","operation_params":{"text":"{{payload.text}}","labels":["sales","support","spam"],"provider":"openai"},"event_type":"resend.email.received.v1","event_source":"resend","emit_success_event":true}'
+  -d '{"destination_type":"connection","connection_id":"<llm_connection_id>","operation":"classify","operation_params":{"text":"{{payload.text}}","labels":["sales","support","spam"],"integration":"openai"},"event_type":"resend.email.received.v1","event_source":"resend","emit_success_event":true}'
 
 curl -X POST localhost:8081/subscriptions \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer <api_key>' \
-  -d '{"destination_type":"connector","connector_instance_id":"<llm_connector_id>","operation":"extract","operation_params":{"text":"{{payload.text}}","schema":{"type":"object","properties":{"customer":{"type":"object","properties":{"name":{"type":"string"}}},"urgent":{"type":"boolean"}}},"provider":"openai"},"event_type":"resend.email.received.v1","event_source":"resend","emit_success_event":true}'
+  -d '{"destination_type":"connection","connection_id":"<llm_connection_id>","operation":"extract","operation_params":{"text":"{{payload.text}}","schema":{"type":"object","properties":{"customer":{"type":"object","properties":{"name":{"type":"string"}}},"urgent":{"type":"boolean"}}},"integration":"openai"},"event_type":"resend.email.received.v1","event_source":"resend","emit_success_event":true}'
 ```
+
+When a subscription targets the same integration as the originating event and does not specify `connection_id`, Groot may default the delivery to the originating `source.connection_id` or preserved `lineage.connection_id`. This allows connection-aware chaining such as `slack -> llm -> slack` without hardcoding one Slack connection onto the downstream subscription.
 
 Enable Stripe inbound routing for a tenant:
 
@@ -572,34 +587,34 @@ Phase 14 extends that flow by:
 
 Phase 28 extends that flow by:
 
-- exposing a provider catalog at `GET /providers` and `GET /providers/{name}*`
-- deriving provider metadata from the compiled provider registry instead of hand-maintained docs
-- validating provider-owned schemas against the database schema registry at startup, even when `SCHEMA_REGISTRATION_MODE=migrate`
-- generating committed provider reference docs under `docs/providers/generated/`
+- exposing a integration catalog at `GET /integrations` and `GET /integrations/{name}*`
+- deriving integration metadata from the compiled integration registry instead of hand-maintained docs
+- validating integration-owned schemas against the database schema registry at startup, even when `SCHEMA_REGISTRATION_MODE=migrate`
+- generating committed integration reference docs under `docs/integrations/generated/`
 
-Regenerate the committed provider reference docs with:
+Regenerate the committed integration reference docs with:
 
 ```sh
-./scripts/generate-provider-docs.sh
+./scripts/generate-integration-docs.sh
 ```
 
 Phase 7 extends that flow by:
 
-- storing tenant connector instances in `connector_instances.config_json`
-- supporting `destination_type=connector` subscriptions
+- storing tenant connections in `connections.config_json`
+- supporting `destination_type=connection` subscriptions
 - executing Slack `post_message` actions from the Temporal delivery workflow
-- rejecting invalid connector template placeholders at subscription creation time
-- recording connector delivery `external_id` and `last_status_code`
-- exposing connector delivery counters in `GET /metrics`
+- rejecting invalid connection template placeholders at subscription creation time
+- recording connection delivery `external_id` and `last_status_code`
+- exposing connection delivery counters in `GET /metrics`
 
 Phase 8 extends that flow by:
 
-- adding `scope` and `owner_tenant_id` to connector instances
-- allowing tenant-owned or global connector instances
+- adding `scope` and `owner_tenant_id` to connections
+- allowing tenant-owned or global connections
 - resolving inbound tenants through generic `inbound_routes`
 - moving Resend enablement to `inbound_routes`
 - exposing tenant and system inbound route APIs
-- exposing inbound routing and global connector metrics
+- exposing inbound routing and global connection metrics
 
 Phase 9 extends that flow by:
 
@@ -614,17 +629,17 @@ Phase 10 extends that flow by:
 - enabling tenant-scoped Stripe webhook routing through `inbound_routes`
 - verifying Stripe signatures with `Stripe-Signature`
 - publishing canonical `stripe.<event_type>` events
-- executing Notion `create_page` and `append_block` actions from connector subscriptions
+- executing Notion `create_page` and `append_block` actions from connection subscriptions
 - recording Notion delivery `external_id` and `last_status_code`
 - exposing Stripe and Notion metrics and logs
 
 Phase 11 extends that flow by:
 
-- adding a global-only `llm` connector instance type
-- supporting `generate` and `summarize` connector operations
-- resolving provider credentials from literal config values or `env:` references
-- invoking OpenAI and Anthropic through the existing Temporal connector path
-- logging provider/model/token usage metadata without persisting generated text
+- adding a global-only `llm` connection type
+- supporting `generate` and `summarize` connection operations
+- resolving integration credentials from literal config values or `env:` references
+- invoking OpenAI and Anthropic through the existing Temporal connection path
+- logging integration/model/token usage metadata without persisting generated text
 - exposing LLM request, failure, and latency metrics
 
 Phase 12 extends that flow by:
@@ -635,6 +650,14 @@ Phase 12 extends that flow by:
 - linking emitted result events back to `delivery_jobs.result_event_id`
 - routing result events through the existing Kafka and router pipeline
 - stopping event chains when `MAX_CHAIN_DEPTH` is reached
+
+Phase 33 extends that flow by:
+
+- replacing the canonical string event source with a structured `source` object that can carry `integration`, `connection_id`, optional `connection_name`, and optional `external_account_id`
+- preserving originating external connection lineage on internal result events through an optional `lineage` object
+- storing connection-aware source and lineage metadata on `events`
+- exposing `source.*` and `lineage.*` to subscription filters and templates
+- allowing same-integration downstream deliveries to default to the originating connection when no explicit `connection_id` is supplied
 
 The API binary now runs:
 
@@ -661,20 +684,20 @@ Phase 5 adds `migrations/005_function_destinations.sql`, which:
 
 Phase 6 adds `migrations/006_resend_connector.sql`, which:
 
-- creates `connector_instances`
+- creates `connections`
 - creates `resend_routes`
 - creates `system_settings`
 
 Phase 7 adds `migrations/007_outbound_connectors.sql`, which:
 
-- adds `connector_instances.config_json`
-- adds connector destination fields to `subscriptions`
+- adds `connections.config_json`
+- adds connection destination fields to `subscriptions`
 - adds `delivery_jobs.external_id`
 - adds `delivery_jobs.last_status_code`
 
 Phase 8 adds `migrations/008_connector_scope_and_routing.sql`, which:
 
-- adds `scope` and `owner_tenant_id` to `connector_instances`
+- adds `scope` and `owner_tenant_id` to `connections`
 - creates `inbound_routes`
 
 Phase 9 adds `migrations/009_event_replay.sql`, which:
@@ -685,12 +708,12 @@ Phase 9 adds `migrations/009_event_replay.sql`, which:
 
 Phase 10 adds no new migration. It reuses:
 
-- `connector_instances.config_json` for Stripe and Notion connector secrets
+- `connections.config_json` for Stripe and Notion connection secrets
 - `inbound_routes` for Stripe account routing
 
 Phase 11 adds no new migration. It reuses:
 
-- global `connector_instances` for the `llm` connector
+- global `connections` for the `llm` integration
 - existing `delivery_jobs` fields to record status and last status code
 
 Phase 12 adds `migrations/010_phase12_result_events.sql`, which:

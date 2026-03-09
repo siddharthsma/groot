@@ -5,12 +5,12 @@
 Implement a global LLM connector that allows subscriptions to invoke
 large language models for text generation and summarization.
 
-Initial providers:
+Initial integrations:
 
 -   OpenAI
 -   Anthropic
 
-The connector instance is global scope only.
+The connection is global scope only.
 
 ------------------------------------------------------------------------
 
@@ -19,9 +19,9 @@ The connector instance is global scope only.
 Phase 11 implements:
 
 1.  Global llm connector
-2.  Provider abstraction layer
-3.  OpenAI provider implementation
-4.  Anthropic provider implementation
+2.  Integration abstraction layer
+3.  OpenAI integration implementation
+4.  Anthropic integration implementation
 5.  LLM operations: generate, summarize
 6.  Token usage recording
 7.  Retry classification and timeout rules
@@ -60,7 +60,7 @@ Validation rules:
 
 ------------------------------------------------------------------------
 
-# Connector Instance Configuration
+# Connection Configuration
 
 Stored in:
 
@@ -68,24 +68,24 @@ connector_instances.config_json
 
 Example:
 
-{ "default_provider": "openai", "providers": { "openai": { "api_key":
+{ "default_integration": "openai", "integrations": { "openai": { "api_key":
 "env:OPENAI_API_KEY" }, "anthropic": { "api_key":
 "env:ANTHROPIC_API_KEY" } } }
 
 Rules:
 
--   default_provider must exist in providers
--   provider keys may reference env variables using env: prefix
+-   default_integration must exist in integrations
+-   integration keys may reference env variables using env: prefix
 
 ------------------------------------------------------------------------
 
-# Provider Abstraction
+# Integration Abstraction
 
 Location:
 
-internal/connectors/outbound/llm/providers
+internal/connectors/outbound/llm/integrations
 
-Provider interface:
+Integration interface:
 
 Name() string
 
@@ -110,17 +110,17 @@ Generate freeform text from a prompt.
 Parameters:
 
 prompt (required) model (optional) temperature (optional) max_tokens
-(optional) provider (optional)
+(optional) integration (optional)
 
 Example:
 
 { "prompt": "Summarize this email: {{payload.text}}", "temperature": 0.2
 }
 
-Provider resolution:
+Integration resolution:
 
-if provider exists → use it\
-else → use default_provider
+if integration exists → use it\
+else → use default_integration
 
 ------------------------------------------------------------------------
 
@@ -132,7 +132,7 @@ Summarize long text input.
 
 Parameters:
 
-text (required) max_tokens (optional) provider (optional)
+text (required) max_tokens (optional) integration (optional)
 
 Implementation:
 
@@ -146,11 +146,11 @@ Then execute Generate.
 
 ------------------------------------------------------------------------
 
-# OpenAI Provider
+# OpenAI Integration
 
 Location:
 
-internal/connectors/outbound/llm/providers/openai
+internal/connectors/outbound/llm/integrations/openai
 
 Endpoint:
 
@@ -179,11 +179,11 @@ PermanentError
 
 ------------------------------------------------------------------------
 
-# Anthropic Provider
+# Anthropic Integration
 
 Location:
 
-internal/connectors/outbound/llm/providers/anthropic
+internal/connectors/outbound/llm/integrations/anthropic
 
 Endpoint:
 
@@ -215,9 +215,9 @@ internal/connectors/outbound/llm
 Steps:
 
 1.  Load connector_instance
-2.  Resolve provider
+2.  Resolve integration
 3.  Resolve operation
-4.  Execute provider.Generate
+4.  Execute integration.Generate
 5.  Return generated text
 
 Delivery result:
@@ -245,7 +245,7 @@ Capture token usage per execution.
 
 Log fields:
 
-prompt_tokens completion_tokens total_tokens provider model
+prompt_tokens completion_tokens total_tokens integration model
 
 ------------------------------------------------------------------------
 
@@ -257,7 +257,7 @@ llm_action_started llm_action_succeeded llm_action_failed
 
 Fields:
 
-tenant_id operation provider model delivery_job_id event_id
+tenant_id operation integration model delivery_job_id event_id
 
 Secrets must never be logged.
 
@@ -267,8 +267,8 @@ Secrets must never be logged.
 
 Counters:
 
-groot_llm_requests_total{provider,operation}
-groot_llm_failures_total{provider}
+groot_llm_requests_total{integration,operation}
+groot_llm_failures_total{integration}
 
 Histogram:
 
@@ -278,25 +278,25 @@ groot_llm_latency_seconds
 
 # Verification
 
-1.  Create global LLM connector instance
+1.  Create global LLM connection
 2.  Create subscription using llm.generate
 3.  Trigger event containing text
 4.  Confirm response generated
 5.  Confirm delivery_jobs.status = succeeded
 6.  Verify token usage logs
 
-Repeat test with provider override:
+Repeat test with integration override:
 
-provider=anthropic
+integration=anthropic
 
 ------------------------------------------------------------------------
 
 # Phase 11 Completion Criteria
 
 -   llm connector implemented with global scope
--   provider abstraction implemented
--   OpenAI provider working
--   Anthropic provider working
+-   integration abstraction implemented
+-   OpenAI integration working
+-   Anthropic integration working
 -   generate and summarize operations implemented
 -   token usage logged
 -   Temporal workflow executes llm connector

@@ -23,8 +23,8 @@ export default function Home() {
           </CardHeader>
           <CardContent className="space-y-3 text-sm text-slate-600">
             <p>Next.js App Router workspace with TypeScript and Tailwind.</p>
-            <p>React Query provider and API client foundation.</p>
-            <p>Placeholder routes for providers, events, and agents.</p>
+            <p>React Query integration and API client foundation.</p>
+            <p>Placeholder routes for integrations, events, and agents.</p>
             <p>shadcn/ui base components plus reusable form scaffolding.</p>
           </CardContent>
         </Card>

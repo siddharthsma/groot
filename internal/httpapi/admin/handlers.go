@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"groot/internal/apikey"
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/graph"
 	"groot/internal/httpapi/common"
 	"groot/internal/replay"
@@ -169,7 +169,7 @@ func (h *Handlers) adminTenantAPIKeyRevoke(w http.ResponseWriter, r *http.Reques
 	common.WriteJSON(w, http.StatusOK, key)
 }
 
-func (h *Handlers) adminConnectorInstances(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) adminConnections(w http.ResponseWriter, r *http.Request) {
 	var tenantID *tenant.ID
 	if raw := strings.TrimSpace(r.URL.Query().Get("tenant_id")); raw != "" {
 		parsed, err := uuid.Parse(raw)
@@ -179,36 +179,36 @@ func (h *Handlers) adminConnectorInstances(w http.ResponseWriter, r *http.Reques
 		}
 		tenantID = &parsed
 	}
-	instances, err := h.state.ConnectorSvc.AdminList(r.Context(), tenantID, r.URL.Query().Get("connector_name"), r.URL.Query().Get("scope"))
+	instances, err := h.state.ConnectionSvc.AdminList(r.Context(), tenantID, r.URL.Query().Get("integration_name"), r.URL.Query().Get("scope"))
 	if err != nil {
-		common.WriteError(w, http.StatusInternalServerError, "failed to list connector instances")
+		common.WriteError(w, http.StatusInternalServerError, "failed to list connections")
 		return
 	}
 	response := make([]map[string]any, 0, len(instances))
 	for _, instance := range instances {
 		response = append(response, map[string]any{
-			"id":             instance.ID.String(),
-			"tenant_id":      instance.TenantID.String(),
-			"connector_name": instance.ConnectorName,
-			"scope":          instance.Scope,
-			"created_at":     instance.CreatedAt,
-			"updated_at":     instance.UpdatedAt,
+			"id":               instance.ID.String(),
+			"tenant_id":        instance.TenantID.String(),
+			"integration_name": instance.IntegrationName,
+			"scope":            instance.Scope,
+			"created_at":       instance.CreatedAt,
+			"updated_at":       instance.UpdatedAt,
 		})
 	}
 	common.WriteJSON(w, http.StatusOK, response)
 }
 
-func (h *Handlers) adminConnectorInstance(w http.ResponseWriter, r *http.Request) {
+func (h *Handlers) adminConnection(w http.ResponseWriter, r *http.Request) {
 	id, err := uuid.Parse(r.PathValue("id"))
 	if err != nil {
 		common.WriteError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	var req struct {
-		TenantID      string          `json:"tenant_id"`
-		ConnectorName string          `json:"connector_name"`
-		Scope         string          `json:"scope"`
-		Config        json.RawMessage `json:"config"`
+		TenantID        string          `json:"tenant_id"`
+		IntegrationName string          `json:"integration_name"`
+		Scope           string          `json:"scope"`
+		Config          json.RawMessage `json:"config"`
 	}
 	if err := common.DecodeJSON(r, &req); err != nil {
 		common.WriteError(w, http.StatusBadRequest, err.Error())
@@ -223,13 +223,13 @@ func (h *Handlers) adminConnectorInstance(w http.ResponseWriter, r *http.Request
 		}
 		tenantID = &parsed
 	}
-	instance, err := h.state.ConnectorSvc.AdminUpsert(r.Context(), id, tenantID, req.ConnectorName, req.Scope, req.Config)
+	instance, err := h.state.ConnectionSvc.AdminUpsert(r.Context(), id, tenantID, req.IntegrationName, req.Scope, req.Config)
 	if err != nil {
 		switch {
-		case errors.Is(err, connectorinstance.ErrUnsupportedConnector), errors.Is(err, connectorinstance.ErrInvalidConfig), errors.Is(err, connectorinstance.ErrMissingBotToken), errors.Is(err, connectorinstance.ErrMissingWebhookSecret), errors.Is(err, connectorinstance.ErrMissingStripeAccount), errors.Is(err, connectorinstance.ErrMissingNotionToken), errors.Is(err, connectorinstance.ErrMissingLLMProviders), errors.Is(err, connectorinstance.ErrInvalidLLMProvider), errors.Is(err, connectorinstance.ErrMissingLLMAPIKey), errors.Is(err, connectorinstance.ErrInvalidScope), errors.Is(err, connectorinstance.ErrGlobalNotAllowed), errors.Is(err, connectorinstance.ErrTenantOnlyConnector), errors.Is(err, connectorinstance.ErrGlobalOnlyConnector), errors.Is(err, connectorinstance.ErrImmutableName), errors.Is(err, connectorinstance.ErrImmutableScope):
+		case errors.Is(err, connection.ErrUnsupportedConnection), errors.Is(err, connection.ErrInvalidConfig), errors.Is(err, connection.ErrMissingBotToken), errors.Is(err, connection.ErrMissingWebhookSecret), errors.Is(err, connection.ErrMissingStripeAccount), errors.Is(err, connection.ErrMissingNotionToken), errors.Is(err, connection.ErrMissingLLMIntegrations), errors.Is(err, connection.ErrInvalidLLMIntegration), errors.Is(err, connection.ErrMissingLLMAPIKey), errors.Is(err, connection.ErrInvalidScope), errors.Is(err, connection.ErrGlobalNotAllowed), errors.Is(err, connection.ErrTenantOnlyConnection), errors.Is(err, connection.ErrGlobalOnlyConnection), errors.Is(err, connection.ErrImmutableName), errors.Is(err, connection.ErrImmutableScope):
 			common.WriteError(w, http.StatusBadRequest, err.Error())
 		default:
-			common.WriteError(w, http.StatusInternalServerError, "failed to upsert connector instance")
+			common.WriteError(w, http.StatusInternalServerError, "failed to upsert connection")
 		}
 		return
 	}
@@ -237,14 +237,14 @@ func (h *Handlers) adminConnectorInstance(w http.ResponseWriter, r *http.Request
 	if tenantID != nil {
 		targetTenantID = *tenantID
 	}
-	h.state.AdminAudit(targetTenantID, "admin.connector_instance.upsert", "connector_instance", &instance.ID, map[string]any{"connector_name": instance.ConnectorName, "scope": instance.Scope}, r.Context())
+	h.state.AdminAudit(targetTenantID, "admin.connection.upsert", "connection", &instance.ID, map[string]any{"integration_name": instance.IntegrationName, "scope": instance.Scope}, r.Context())
 	common.WriteJSON(w, http.StatusOK, map[string]any{
-		"id":             instance.ID.String(),
-		"tenant_id":      instance.TenantID.String(),
-		"connector_name": instance.ConnectorName,
-		"scope":          instance.Scope,
-		"created_at":     instance.CreatedAt,
-		"updated_at":     instance.UpdatedAt,
+		"id":               instance.ID.String(),
+		"tenant_id":        instance.TenantID.String(),
+		"integration_name": instance.IntegrationName,
+		"scope":            instance.Scope,
+		"created_at":       instance.CreatedAt,
+		"updated_at":       instance.UpdatedAt,
 	})
 }
 
@@ -269,7 +269,7 @@ func (h *Handlers) adminSubscriptions(w http.ResponseWriter, r *http.Request) {
 			"id":                      sub.ID.String(),
 			"tenant_id":               sub.TenantID.String(),
 			"destination_type":        sub.DestinationType,
-			"connector_instance_id":   common.OptionalUUIDValue(sub.ConnectorInstanceID),
+			"connection_id":           common.OptionalUUIDValue(sub.ConnectionID),
 			"connected_app_id":        common.OptionalUUIDValue(sub.ConnectedAppID),
 			"function_destination_id": common.OptionalUUIDValue(sub.FunctionDestinationID),
 			"operation":               sub.Operation,
@@ -295,7 +295,7 @@ func (h *Handlers) adminTenantSubscriptions(w http.ResponseWriter, r *http.Reque
 		ConnectedAppID         string          `json:"connected_app_id"`
 		DestinationType        string          `json:"destination_type"`
 		FunctionDestinationID  string          `json:"function_destination_id"`
-		ConnectorInstanceID    string          `json:"connector_instance_id"`
+		ConnectionID           string          `json:"connection_id"`
 		AgentID                string          `json:"agent_id"`
 		SessionKeyTemplate     *string         `json:"session_key_template"`
 		SessionCreateIfMissing *bool           `json:"session_create_if_missing"`
@@ -311,7 +311,7 @@ func (h *Handlers) adminTenantSubscriptions(w http.ResponseWriter, r *http.Reque
 		common.WriteError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	appID, functionID, connectorInstanceID, agentID, operation, err := common.ParseSubscriptionRequestFields(req.ConnectedAppID, req.FunctionDestinationID, req.ConnectorInstanceID, req.AgentID, req.Operation)
+	appID, functionID, connectionID, agentID, operation, err := common.ParseSubscriptionRequestFields(req.ConnectedAppID, req.FunctionDestinationID, req.ConnectionID, req.AgentID, req.Operation)
 	if err != nil {
 		common.WriteError(w, http.StatusBadRequest, err.Error())
 		return
@@ -320,14 +320,14 @@ func (h *Handlers) adminTenantSubscriptions(w http.ResponseWriter, r *http.Reque
 	if req.SessionCreateIfMissing != nil {
 		sessionCreateIfMissing = *req.SessionCreateIfMissing
 	}
-	result, err := h.state.SubSvc.Create(r.Context(), tenantID, req.DestinationType, appID, functionID, connectorInstanceID, agentID, req.SessionKeyTemplate, sessionCreateIfMissing, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
+	result, err := h.state.SubSvc.Create(r.Context(), tenantID, req.DestinationType, appID, functionID, connectionID, agentID, req.SessionKeyTemplate, sessionCreateIfMissing, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
 	if err != nil {
 		switch {
 		case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams):
 			common.WriteError(w, http.StatusBadRequest, err.Error())
 		case common.IsFilterValidationError(err):
 			common.WriteSubscriptionFilterError(w, err)
-		case errors.Is(err, subscription.ErrConnectedAppNotFound), errors.Is(err, subscription.ErrFunctionDestinationNotFound), errors.Is(err, subscription.ErrConnectorInstanceNotFound), errors.Is(err, subscription.ErrConnectorInstanceForbidden):
+		case errors.Is(err, subscription.ErrConnectedAppNotFound), errors.Is(err, subscription.ErrFunctionDestinationNotFound), errors.Is(err, subscription.ErrConnectionNotFound), errors.Is(err, subscription.ErrConnectionForbidden):
 			common.WriteError(w, http.StatusNotFound, err.Error())
 		default:
 			common.WriteError(w, http.StatusInternalServerError, "failed to create subscription")
@@ -434,7 +434,7 @@ func (h *Handlers) adminTopology(w http.ResponseWriter, r *http.Request) {
 	}
 	topology, err := h.state.GraphSvc.BuildTopology(r.Context(), graph.TopologyRequest{
 		TenantID:        tenantID,
-		ConnectorName:   r.URL.Query().Get("connector_name"),
+		IntegrationName: r.URL.Query().Get("integration_name"),
 		EventTypePrefix: r.URL.Query().Get("event_type_prefix"),
 		IncludeGlobal:   includeGlobal,
 		Limit:           limit,

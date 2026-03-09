@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS agent_steps (
   tool_name TEXT,
   tool_args JSONB,
   tool_result JSONB,
-  llm_provider TEXT,
+  llm_integration TEXT,
   llm_model TEXT,
   usage JSONB,
   created_at TIMESTAMP NOT NULL DEFAULT NOW()

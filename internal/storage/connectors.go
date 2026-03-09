@@ -11,44 +11,50 @@ import (
 	"github.com/google/uuid"
 
 	"groot/internal/connectedapp"
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/tenant"
 )
 
-func (d *DB) EnsureConnectorInstance(ctx context.Context, tenantID tenant.ID, connectorName string, createdAt time.Time) error {
+func (d *DB) EnsureConnection(ctx context.Context, tenantID tenant.ID, integrationName string, createdAt time.Time) error {
 	const query = `
 		INSERT INTO connector_instances (id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at)
-		VALUES ($1, $2, $2, $3, 'tenant', 'enabled', '{}'::jsonb, $4)
-		ON CONFLICT (tenant_id, connector_name) DO NOTHING
+		SELECT $1, $2, $2, $3, 'tenant', 'enabled', '{}'::jsonb, $4
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM connector_instances
+			WHERE owner_tenant_id = $2
+			  AND connector_name = $3
+			  AND scope = 'tenant'
+		)
 	`
-	if _, err := d.db.ExecContext(ctx, query, uuid.New(), tenantID, connectorName, createdAt); err != nil {
-		return fmt.Errorf("ensure connector instance: %w", err)
+	if _, err := d.db.ExecContext(ctx, query, uuid.New(), tenantID, integrationName, createdAt); err != nil {
+		return fmt.Errorf("ensure connection: %w", err)
 	}
 	return nil
 }
 
-func (d *DB) CreateConnectorInstance(ctx context.Context, record connectorinstance.Record) (connectorinstance.Instance, error) {
+func (d *DB) CreateConnection(ctx context.Context, record connection.Record) (connection.Instance, error) {
 	const query = `
 		INSERT INTO connector_instances (id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, created_by_actor_type, created_by_actor_id, created_by_actor_email, updated_by_actor_type, updated_by_actor_id, updated_by_actor_email)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $9, $10, $11)
 		RETURNING id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 	`
 	actor := actorFromContext(ctx)
-	var instance connectorinstance.Instance
-	err := scanConnectorInstance(
-		d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.OwnerTenantID, record.ConnectorName, record.Scope, record.Status, []byte(record.Config), record.CreatedAt, actor.Type, actor.ID, actor.Email),
+	var instance connection.Instance
+	err := scanConnection(
+		d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.OwnerTenantID, record.IntegrationName, record.Scope, record.Status, []byte(record.Config), record.CreatedAt, actor.Type, actor.ID, actor.Email),
 		&instance,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
-			return connectorinstance.Instance{}, connectorinstance.ErrDuplicateInstance
+			return connection.Instance{}, connection.ErrDuplicateInstance
 		}
-		return connectorinstance.Instance{}, fmt.Errorf("insert connector instance: %w", err)
+		return connection.Instance{}, fmt.Errorf("insert connection: %w", err)
 	}
 	return instance, nil
 }
 
-func (d *DB) ListConnectorInstances(ctx context.Context, tenantID tenant.ID) ([]connectorinstance.Instance, error) {
+func (d *DB) ListConnections(ctx context.Context, tenantID tenant.ID) ([]connection.Instance, error) {
 	const query = `
 		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 		FROM connector_instances
@@ -57,25 +63,25 @@ func (d *DB) ListConnectorInstances(ctx context.Context, tenantID tenant.ID) ([]
 	`
 	rows, err := d.db.QueryContext(ctx, query, tenantID)
 	if err != nil {
-		return nil, fmt.Errorf("query connector instances: %w", err)
+		return nil, fmt.Errorf("query connections: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	var instances []connectorinstance.Instance
+	var instances []connection.Instance
 	for rows.Next() {
-		var instance connectorinstance.Instance
-		if err := scanConnectorInstance(rows, &instance); err != nil {
-			return nil, fmt.Errorf("scan connector instance: %w", err)
+		var instance connection.Instance
+		if err := scanConnection(rows, &instance); err != nil {
+			return nil, fmt.Errorf("scan connection: %w", err)
 		}
 		instances = append(instances, instance)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate connector instances: %w", err)
+		return nil, fmt.Errorf("iterate connections: %w", err)
 	}
 	return instances, nil
 }
 
-func (d *DB) ListAllConnectorInstances(ctx context.Context) ([]connectorinstance.Instance, error) {
+func (d *DB) ListAllConnections(ctx context.Context) ([]connection.Instance, error) {
 	const query = `
 		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 		FROM connector_instances
@@ -83,58 +89,60 @@ func (d *DB) ListAllConnectorInstances(ctx context.Context) ([]connectorinstance
 	`
 	rows, err := d.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("query all connector instances: %w", err)
+		return nil, fmt.Errorf("query all connections: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var instances []connectorinstance.Instance
+	var instances []connection.Instance
 	for rows.Next() {
-		var instance connectorinstance.Instance
-		if err := scanConnectorInstance(rows, &instance); err != nil {
-			return nil, fmt.Errorf("scan connector instance: %w", err)
+		var instance connection.Instance
+		if err := scanConnection(rows, &instance); err != nil {
+			return nil, fmt.Errorf("scan connection: %w", err)
 		}
 		instances = append(instances, instance)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate all connector instances: %w", err)
+		return nil, fmt.Errorf("iterate all connections: %w", err)
 	}
 	return instances, nil
 }
 
-func (d *DB) GetConnectorInstance(ctx context.Context, tenantID tenant.ID, id uuid.UUID) (connectorinstance.Instance, error) {
+func (d *DB) GetConnection(ctx context.Context, tenantID tenant.ID, id uuid.UUID) (connection.Instance, error) {
 	const query = `
 		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 		FROM connector_instances
 		WHERE id = $1 AND (owner_tenant_id = $2 OR scope = 'global')
 	`
-	var instance connectorinstance.Instance
-	err := scanConnectorInstance(d.db.QueryRowContext(ctx, query, id, tenantID), &instance)
+	var instance connection.Instance
+	err := scanConnection(d.db.QueryRowContext(ctx, query, id, tenantID), &instance)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return connectorinstance.Instance{}, connectorinstance.ErrNotFound
+			return connection.Instance{}, connection.ErrNotFound
 		}
-		return connectorinstance.Instance{}, fmt.Errorf("get connector instance: %w", err)
+		return connection.Instance{}, fmt.Errorf("get connection: %w", err)
 	}
 	return instance, nil
 }
 
-func (d *DB) GetTenantConnectorInstanceByName(ctx context.Context, tenantID tenant.ID, connectorName string) (connectorinstance.Instance, error) {
+func (d *DB) GetTenantConnectionByName(ctx context.Context, tenantID tenant.ID, integrationName string) (connection.Instance, error) {
 	const query = `
 		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 		FROM connector_instances
 		WHERE owner_tenant_id = $1 AND connector_name = $2 AND scope = 'tenant'
+		ORDER BY created_at ASC
+		LIMIT 1
 	`
-	var instance connectorinstance.Instance
-	err := scanConnectorInstance(d.db.QueryRowContext(ctx, query, tenantID, connectorName), &instance)
+	var instance connection.Instance
+	err := scanConnection(d.db.QueryRowContext(ctx, query, tenantID, integrationName), &instance)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return connectorinstance.Instance{}, connectorinstance.ErrNotFound
+			return connection.Instance{}, connection.ErrNotFound
 		}
-		return connectorinstance.Instance{}, fmt.Errorf("get tenant connector instance by name: %w", err)
+		return connection.Instance{}, fmt.Errorf("get tenant connection by name: %w", err)
 	}
 	return instance, nil
 }
 
-func (d *DB) GetGlobalConnectorInstanceByName(ctx context.Context, connectorName string) (connectorinstance.Instance, error) {
+func (d *DB) GetGlobalConnectionByName(ctx context.Context, integrationName string) (connection.Instance, error) {
 	const query = `
 		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 		FROM connector_instances
@@ -142,18 +150,18 @@ func (d *DB) GetGlobalConnectorInstanceByName(ctx context.Context, connectorName
 		ORDER BY created_at ASC
 		LIMIT 1
 	`
-	var instance connectorinstance.Instance
-	err := scanConnectorInstance(d.db.QueryRowContext(ctx, query, connectorName), &instance)
+	var instance connection.Instance
+	err := scanConnection(d.db.QueryRowContext(ctx, query, integrationName), &instance)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return connectorinstance.Instance{}, connectorinstance.ErrNotFound
+			return connection.Instance{}, connection.ErrNotFound
 		}
-		return connectorinstance.Instance{}, fmt.Errorf("get global connector instance by name: %w", err)
+		return connection.Instance{}, fmt.Errorf("get global connection by name: %w", err)
 	}
 	return instance, nil
 }
 
-func (d *DB) UpdateConnectorInstanceConfig(ctx context.Context, tenantID tenant.ID, connectorName string, config json.RawMessage) (connectorinstance.Instance, error) {
+func (d *DB) UpdateConnectionConfig(ctx context.Context, tenantID tenant.ID, integrationName string, config json.RawMessage) (connection.Instance, error) {
 	const query = `
 		UPDATE connector_instances
 		SET config_json = $3,
@@ -161,39 +169,45 @@ func (d *DB) UpdateConnectorInstanceConfig(ctx context.Context, tenantID tenant.
 		    updated_by_actor_id = $5,
 		    updated_by_actor_email = $6,
 		    updated_at = NOW()
-		WHERE owner_tenant_id = $1 AND connector_name = $2 AND scope = 'tenant'
+		WHERE id = (
+			SELECT id
+			FROM connector_instances
+			WHERE owner_tenant_id = $1 AND connector_name = $2 AND scope = 'tenant'
+			ORDER BY created_at ASC
+			LIMIT 1
+		)
 		RETURNING id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 	`
 	actor := actorFromContext(ctx)
-	var instance connectorinstance.Instance
-	err := scanConnectorInstance(d.db.QueryRowContext(ctx, query, tenantID, connectorName, []byte(config), actor.Type, actor.ID, actor.Email), &instance)
+	var instance connection.Instance
+	err := scanConnection(d.db.QueryRowContext(ctx, query, tenantID, integrationName, []byte(config), actor.Type, actor.ID, actor.Email), &instance)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return connectorinstance.Instance{}, connectorinstance.ErrNotFound
+			return connection.Instance{}, connection.ErrNotFound
 		}
-		return connectorinstance.Instance{}, fmt.Errorf("update connector instance config: %w", err)
+		return connection.Instance{}, fmt.Errorf("update connection config: %w", err)
 	}
 	return instance, nil
 }
 
-func (d *DB) GetConnectorInstanceByID(ctx context.Context, id uuid.UUID) (connectorinstance.Instance, error) {
+func (d *DB) GetConnectionByID(ctx context.Context, id uuid.UUID) (connection.Instance, error) {
 	const query = `
 		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 		FROM connector_instances
 		WHERE id = $1
 	`
-	var instance connectorinstance.Instance
-	err := scanConnectorInstance(d.db.QueryRowContext(ctx, query, id), &instance)
+	var instance connection.Instance
+	err := scanConnection(d.db.QueryRowContext(ctx, query, id), &instance)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return connectorinstance.Instance{}, connectorinstance.ErrNotFound
+			return connection.Instance{}, connection.ErrNotFound
 		}
-		return connectorinstance.Instance{}, fmt.Errorf("get connector instance by id: %w", err)
+		return connection.Instance{}, fmt.Errorf("get connection by id: %w", err)
 	}
 	return instance, nil
 }
 
-func (d *DB) UpdateConnectorInstanceByID(ctx context.Context, id uuid.UUID, config json.RawMessage) (connectorinstance.Instance, error) {
+func (d *DB) UpdateConnectionByID(ctx context.Context, id uuid.UUID, config json.RawMessage) (connection.Instance, error) {
 	const query = `
 		UPDATE connector_instances
 		SET config_json = $2,
@@ -205,13 +219,13 @@ func (d *DB) UpdateConnectorInstanceByID(ctx context.Context, id uuid.UUID, conf
 		RETURNING id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 	`
 	actor := actorFromContext(ctx)
-	var instance connectorinstance.Instance
-	err := scanConnectorInstance(d.db.QueryRowContext(ctx, query, id, []byte(config), actor.Type, actor.ID, actor.Email), &instance)
+	var instance connection.Instance
+	err := scanConnection(d.db.QueryRowContext(ctx, query, id, []byte(config), actor.Type, actor.ID, actor.Email), &instance)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return connectorinstance.Instance{}, connectorinstance.ErrNotFound
+			return connection.Instance{}, connection.ErrNotFound
 		}
-		return connectorinstance.Instance{}, fmt.Errorf("update connector instance by id: %w", err)
+		return connection.Instance{}, fmt.Errorf("update connection by id: %w", err)
 	}
 	return instance, nil
 }
@@ -277,9 +291,9 @@ func (d *DB) GetConnectedApp(ctx context.Context, tenantID tenant.ID, appID uuid
 	return app, nil
 }
 
-func scanConnectorInstance(row scanner, instance *connectorinstance.Instance) error {
+func scanConnection(row scanner, instance *connection.Instance) error {
 	var ownerTenantID sql.NullString
-	if err := row.Scan(&instance.ID, &instance.TenantID, &ownerTenantID, &instance.ConnectorName, &instance.Scope, &instance.Status, &instance.Config, &instance.CreatedAt, &instance.UpdatedAt); err != nil {
+	if err := row.Scan(&instance.ID, &instance.TenantID, &ownerTenantID, &instance.IntegrationName, &instance.Scope, &instance.Status, &instance.Config, &instance.CreatedAt, &instance.UpdatedAt); err != nil {
 		return err
 	}
 	instance.OwnerTenantID = parseOptionalUUID(ownerTenantID)

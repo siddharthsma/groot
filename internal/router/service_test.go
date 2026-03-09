@@ -62,7 +62,7 @@ func TestProcessMessageAppliesFilter(t *testing.T) {
 		now:     func() time.Time { return time.Unix(0, 0).UTC() },
 	}
 
-	msg := kafka.Message{Value: []byte(`{"event_id":"11111111-1111-1111-1111-111111111111","tenant_id":"` + tenantID.String() + `","type":"example.event.v1","source":"manual","timestamp":"2026-03-06T00:00:00Z","payload":{"currency":"usd","amount":120}}`)}
+	msg := kafka.Message{Value: []byte(`{"event_id":"11111111-1111-1111-1111-111111111111","tenant_id":"` + tenantID.String() + `","type":"example.event.v1","source":{"kind":"external","integration":"manual","connection_id":"11111111-1111-1111-1111-111111111111"},"source_kind":"external","timestamp":"2026-03-06T00:00:00Z","payload":{"currency":"usd","amount":120}}`)}
 	if err := consumer.processMessage(context.Background(), msg); err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}

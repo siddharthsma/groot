@@ -30,17 +30,17 @@ func TestPhase29PluginLoading(t *testing.T) {
 
 	h := helpers.NewHarness(t, helpers.HarnessOptions{
 		ExtraEnv: map[string]string{
-			"GROOT_PROVIDER_PLUGIN_DIR": pluginDir,
+			"GROOT_INTEGRATION_PLUGIN_DIR": pluginDir,
 		},
 	})
 
-	resp, body := h.Request(http.MethodGet, "/providers", nil, nil)
+	resp, body := h.Request(http.MethodGet, "/integrations", nil, nil)
 	mustStatus(t, resp, body, http.StatusOK)
-	if !strings.Contains(string(body), `"name":"example_echo_provider"`) || !strings.Contains(string(body), `"source":"plugin"`) {
+	if !strings.Contains(string(body), `"name":"example_echo_integration"`) || !strings.Contains(string(body), `"source":"plugin"`) {
 		t.Fatalf("body = %s", string(body))
 	}
 
-	resp, body = h.Request(http.MethodGet, "/providers/example_echo_provider", nil, nil)
+	resp, body = h.Request(http.MethodGet, "/integrations/example_echo_integration", nil, nil)
 	mustStatus(t, resp, body, http.StatusOK)
 	if !strings.Contains(string(body), `"source":"plugin"`) {
 		t.Fatalf("body = %s", string(body))
@@ -48,32 +48,32 @@ func TestPhase29PluginLoading(t *testing.T) {
 
 	tenantID, legacyKey := h.CreateTenant("plugin-tenant")
 
-	resp, body = h.JSONRequest(http.MethodPost, "/connector-instances", bearerHeader(legacyKey), map[string]any{
-		"connector_name": "example_echo_provider",
-		"config":         map[string]any{},
+	resp, body = h.JSONRequest(http.MethodPost, "/connections", bearerHeader(legacyKey), map[string]any{
+		"integration_name": "example_echo_integration",
+		"config":           map[string]any{},
 	})
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("missing config status=%d body=%s", resp.StatusCode, body)
 	}
 
-	resp, body = h.JSONRequest(http.MethodPost, "/connector-instances", bearerHeader(legacyKey), map[string]any{
-		"connector_name": "example_echo_provider",
+	resp, body = h.JSONRequest(http.MethodPost, "/connections", bearerHeader(legacyKey), map[string]any{
+		"integration_name": "example_echo_integration",
 		"config": map[string]any{
 			"prefix": "plugin:",
 		},
 	})
 	mustStatus(t, resp, body, http.StatusOK)
-	var connectorResp struct {
-		ConnectorInstanceID string `json:"id"`
+	var connectionResp struct {
+		ConnectionID string `json:"id"`
 	}
-	if err := json.Unmarshal(body, &connectorResp); err != nil {
-		t.Fatalf("decode connector create: %v", err)
+	if err := json.Unmarshal(body, &connectionResp); err != nil {
+		t.Fatalf("decode connection create: %v", err)
 	}
 
 	resp, body = h.JSONRequest(http.MethodPost, "/subscriptions", bearerHeader(legacyKey), map[string]any{
-		"destination_type":      "connector",
-		"connector_instance_id": connectorResp.ConnectorInstanceID,
-		"operation":             "echo",
+		"destination_type": "connection",
+		"connection_id":    connectionResp.ConnectionID,
+		"operation":        "echo",
 		"operation_params": map[string]any{
 			"text": "{{payload.message}}",
 		},
@@ -102,14 +102,14 @@ func TestPhase29PluginLoading(t *testing.T) {
 	}
 }
 
-func TestPhase29PluginDuplicateProviderRejected(t *testing.T) {
+func TestPhase29PluginDuplicateIntegrationRejected(t *testing.T) {
 	if !pluginSupported() {
 		t.Skipf("go plugins are not supported on %s", runtime.GOOS)
 	}
 	pluginDir := t.TempDir()
-	buildInlinePlugin(t, pluginDir, "duplicate_slack", duplicateProviderPluginSource("slack"))
+	buildInlinePlugin(t, pluginDir, "duplicate_slack", duplicateIntegrationPluginSource("slack"))
 	logs := runAPIExpectFailure(t, pluginDir)
-	if !strings.Contains(logs, `duplicate provider`) {
+	if !strings.Contains(logs, `duplicate integration`) {
 		t.Fatalf("logs = %s", logs)
 	}
 }
@@ -121,7 +121,7 @@ func TestPhase29PluginInvalidSymbolRejected(t *testing.T) {
 	pluginDir := t.TempDir()
 	buildInlinePlugin(t, pluginDir, "bad_symbol", invalidSymbolPluginSource())
 	logs := runAPIExpectFailure(t, pluginDir)
-	if !strings.Contains(logs, `Provider symbol has wrong type`) {
+	if !strings.Contains(logs, `Integration symbol has wrong type`) {
 		t.Fatalf("logs = %s", logs)
 	}
 }
@@ -138,9 +138,9 @@ func pluginSupported() bool {
 func buildExamplePlugin(t *testing.T, pluginDir string) {
 	t.Helper()
 	root := helpers.RepoRoot()
-	output := filepath.Join(pluginDir, "example_echo_provider.so")
+	output := filepath.Join(pluginDir, "example_echo_integration.so")
 	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", output, ".")
-	cmd.Dir = filepath.Join(root, "examples", "provider-plugin")
+	cmd.Dir = filepath.Join(root, "examples", "integration-plugin")
 	var logs bytes.Buffer
 	cmd.Stdout = &logs
 	cmd.Stderr = &logs
@@ -157,8 +157,8 @@ func buildInlinePlugin(t *testing.T, pluginDir, name, source string) {
 	if err := os.WriteFile(filepath.Join(moduleDir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatalf("write go.mod: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(moduleDir, "provider.go"), []byte(source), 0o644); err != nil {
-		t.Fatalf("write provider.go: %v", err)
+	if err := os.WriteFile(filepath.Join(moduleDir, "integration.go"), []byte(source), 0o644); err != nil {
+		t.Fatalf("write integration.go: %v", err)
 	}
 	output := filepath.Join(pluginDir, name+".so")
 	cmd := exec.Command("go", "build", "-buildmode=plugin", "-o", output, ".")
@@ -189,7 +189,7 @@ func runAPIExpectFailure(t *testing.T, pluginDir string) string {
 		"GROOT_EDITION=internal",
 		"GROOT_TENANCY_MODE=multi",
 		"GROOT_HTTP_ADDR=127.0.0.1:" + httpPort,
-		"GROOT_PROVIDER_PLUGIN_DIR=" + pluginDir,
+		"GROOT_INTEGRATION_PLUGIN_DIR=" + pluginDir,
 		"POSTGRES_DSN=postgres://groot:groot@localhost:5432/groot?sslmode=disable",
 		"KAFKA_BROKERS=localhost:9092",
 		"ROUTER_CONSUMER_GROUP=phase29-plugin-" + httpPort,
@@ -320,33 +320,33 @@ func latestDeliveryError(t *testing.T, h *helpers.Harness, deliveryID string) st
 	return ""
 }
 
-func duplicateProviderPluginSource(name string) string {
+func duplicateIntegrationPluginSource(name string) string {
 	return fmt.Sprintf(`package main
 
 import (
 	"context"
-	sdkprovider "groot/sdk/provider"
+	sdkintegration "groot/sdk/integration"
 )
 
-type duplicateProvider struct{}
+type duplicateIntegration struct{}
 
-var Provider sdkprovider.Provider = &duplicateProvider{}
+var Integration sdkintegration.Integration = &duplicateIntegration{}
 
-func (duplicateProvider) Spec() sdkprovider.ProviderSpec {
-	return sdkprovider.ProviderSpec{
+func (duplicateIntegration) Spec() sdkintegration.IntegrationSpec {
+	return sdkintegration.IntegrationSpec{
 		Name: %q,
 		SupportsTenantScope: true,
-		Config: sdkprovider.ConfigSpec{
-			Fields: []sdkprovider.ConfigField{{Name: "token"}},
+		Config: sdkintegration.ConfigSpec{
+			Fields: []sdkintegration.ConfigField{{Name: "token"}},
 		},
-		Operations: []sdkprovider.OperationSpec{{Name: "echo", Description: "echo"}},
+		Operations: []sdkintegration.OperationSpec{{Name: "echo", Description: "echo"}},
 	}
 }
 
-func (duplicateProvider) ValidateConfig(config map[string]any) error { return nil }
+func (duplicateIntegration) ValidateConfig(config map[string]any) error { return nil }
 
-func (duplicateProvider) ExecuteOperation(context.Context, sdkprovider.OperationRequest) (sdkprovider.OperationResult, error) {
-	return sdkprovider.OperationResult{}, nil
+func (duplicateIntegration) ExecuteOperation(context.Context, sdkintegration.OperationRequest) (sdkintegration.OperationResult, error) {
+	return sdkintegration.OperationResult{}, nil
 }
 `, name)
 }
@@ -354,6 +354,6 @@ func (duplicateProvider) ExecuteOperation(context.Context, sdkprovider.Operation
 func invalidSymbolPluginSource() string {
 	return `package main
 
-var Provider = "bad"
+var Integration = "bad"
 `
 }

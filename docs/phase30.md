@@ -3,22 +3,22 @@
 
 ## Goal
 
-Introduce a **Signed Provider Package System and Provider Registry** so providers can be safely distributed and installed outside the core Groot repository.
+Introduce a **Signed Integration Package System and Integration Registry** so integrations can be safely distributed and installed outside the core Groot repository.
 
 Phase 30 enables:
 
-- providers distributed as signed packages
-- operator installation of providers from a registry
-- verification of provider integrity and authenticity
-- provider lifecycle management
+- integrations distributed as signed packages
+- operator installation of integrations from a registry
+- verification of integration integrity and authenticity
+- integration lifecycle management
 
 Phase 30 builds on:
 
-- Phase 27 Provider Framework
-- Phase 28 Provider Catalog
-- Phase 29 Provider Plugin System
+- Phase 27 Integration Framework
+- Phase 28 Integration Catalog
+- Phase 29 Integration Plugin System
 
-Providers remain **trusted binaries loaded locally**.
+Integrations remain **trusted binaries loaded locally**.
 
 No automatic remote code execution.
 
@@ -28,16 +28,16 @@ No automatic remote code execution.
 
 Phase 30 implements:
 
-1. Provider package format
-2. Provider package signature verification
-3. Provider registry index format
-4. Provider installation CLI
-5. Provider package cache
-6. Provider metadata verification
-7. Provider version management
-8. Provider lifecycle commands
-9. Provider registry client
-10. Integration tests for provider installation and verification
+1. Integration package format
+2. Integration package signature verification
+3. Integration registry index format
+4. Integration installation CLI
+5. Integration package cache
+6. Integration metadata verification
+7. Integration version management
+8. Integration lifecycle commands
+9. Integration registry client
+10. Integration tests for integration installation and verification
 
 ---
 
@@ -45,19 +45,19 @@ Phase 30 implements:
 
 Rules:
 
-- providers must be signed before installation
-- provider metadata must be verifiable
-- Groot must never load unsigned providers
-- provider installation must be explicit
-- provider registry must be optional
+- integrations must be signed before installation
+- integration metadata must be verifiable
+- Groot must never load unsigned integrations
+- integration installation must be explicit
+- integration registry must be optional
 
-Provider execution model remains identical to Phase 29 plugins.
+Integration execution model remains identical to Phase 29 plugins.
 
 ---
 
-# Provider Package Format
+# Integration Package Format
 
-Introduce provider package extension:
+Introduce integration package extension:
 
 .grootpkg
 
@@ -66,18 +66,18 @@ Example:
 slackplus-1.0.0.grootpkg
 customcrm-0.2.1.grootpkg
 
-A provider package is a **tar archive** with the following structure:
+A integration package is a **tar archive** with the following structure:
 
-provider/
-  provider.so
+integration/
+  integration.so
   manifest.json
   signature.ed25519
 
 ---
 
-# Provider Manifest
+# Integration Manifest
 
-Each provider package must include:
+Each integration package must include:
 
 manifest.json
 
@@ -86,27 +86,27 @@ Example:
 {
   "name": "customcrm",
   "version": "1.0.0",
-  "description": "Custom CRM provider",
+  "description": "Custom CRM integration",
   "author": "Example Corp",
   "groot_version": ">=1.0.0",
-  "provider_spec_hash": "sha256:...",
+  "integration_spec_hash": "sha256:...",
   "build_os": "linux",
   "build_arch": "amd64"
 }
 
 ---
 
-# Provider Signature
+# Integration Signature
 
-Each provider package must include:
+Each integration package must include:
 
 signature.ed25519
 
-Signature must be created using the provider publisher private key.
+Signature must be created using the integration publisher private key.
 
 Signed content:
 
-sha256(provider.so + manifest.json)
+sha256(integration.so + manifest.json)
 
 Groot verifies signature using known public keys.
 
@@ -118,7 +118,7 @@ Introduce publisher key configuration.
 
 Config file:
 
-providers/trusted_keys.json
+integrations/trusted_keys.json
 
 Example:
 
@@ -135,24 +135,24 @@ Only packages signed by trusted publishers may be installed.
 
 ---
 
-# Provider Registry Index
+# Integration Registry Index
 
 Introduce registry index format.
 
 Example registry URL:
 
-https://providers.groot.dev/index.json
+https://integrations.groot.dev/index.json
 
 Index structure:
 
 {
-  "providers": [
+  "integrations": [
     {
       "name": "slackplus",
       "versions": [
         {
           "version": "1.0.0",
-          "package_url": "https://providers.groot.dev/slackplus-1.0.0.grootpkg",
+          "package_url": "https://integrations.groot.dev/slackplus-1.0.0.grootpkg",
           "checksum": "sha256:..."
         }
       ]
@@ -164,7 +164,7 @@ Registry is optional. Operators may install packages manually.
 
 ---
 
-# Provider Installer
+# Integration Installer
 
 Create package:
 
@@ -187,42 +187,42 @@ Responsibilities:
 
 ---
 
-# Provider CLI Commands
+# Integration CLI Commands
 
 Extend Groot CLI.
 
 Commands:
 
-groot provider install <name>
-groot provider install <file>
-groot provider remove <name>
-groot provider list
-groot provider info <name>
+groot integration install <name>
+groot integration install <file>
+groot integration remove <name>
+groot integration list
+groot integration info <name>
 
 Examples:
 
-groot provider install slackplus
-groot provider install ./customcrm-1.0.0.grootpkg
+groot integration install slackplus
+groot integration install ./customcrm-1.0.0.grootpkg
 
 ---
 
 # Installation Location
 
-Installed provider binaries stored in:
+Installed integration binaries stored in:
 
-providers/plugins
+integrations/plugins
 
 Example:
 
-providers/plugins/slackplus.so
+integrations/plugins/slackplus.so
 
-Provider loader from Phase 29 loads plugins from this directory.
+Integration loader from Phase 29 loads plugins from this directory.
 
 ---
 
 # Version Management
 
-Only one version of a provider may be active.
+Only one version of a integration may be active.
 
 Installing a new version must:
 
@@ -231,12 +231,12 @@ Installing a new version must:
 
 Version recorded in:
 
-providers/installed.json
+integrations/installed.json
 
 Example:
 
 {
-  "providers": [
+  "integrations": [
     {
       "name": "slackplus",
       "version": "1.0.0"
@@ -246,7 +246,7 @@ Example:
 
 ---
 
-# Provider Registry Client
+# Integration Registry Client
 
 Create package:
 
@@ -255,9 +255,9 @@ internal/connectors/registryclient
 Responsibilities:
 
 - fetch registry index
-- search providers
+- search integrations
 - resolve latest compatible version
-- download provider package
+- download integration package
 
 ---
 
@@ -265,20 +265,20 @@ Responsibilities:
 
 Installer must verify:
 
-1. provider supports current OS/arch
-2. provider compatible with Groot version
-3. ProviderSpec hash matches manifest
+1. integration supports current OS/arch
+2. integration compatible with Groot version
+3. IntegrationSpec hash matches manifest
 4. plugin loads successfully
 
 Installation must fail if checks fail.
 
 ---
 
-# Provider Catalog Integration
+# Integration Catalog Integration
 
 Phase 28 catalog must include additional metadata.
 
-Provider detail response must include:
+Integration detail response must include:
 
 source
 version
@@ -299,16 +299,16 @@ Example:
 
 Add integration tests:
 
-tests/integration/phase30_provider_installation_test.go
+tests/integration/phase30_integration_installation_test.go
 
 Tests must verify:
 
-1. provider package installs correctly
+1. integration package installs correctly
 2. invalid signature rejected
 3. incompatible version rejected
-4. provider loads after installation
-5. provider removal works
-6. catalog reflects installed provider
+4. integration loads after installation
+5. integration removal works
+6. catalog reflects installed integration
 
 ---
 
@@ -316,15 +316,15 @@ Tests must verify:
 
 Add documentation:
 
-docs/providers/packages.md
+docs/integrations/packages.md
 
 Sections:
 
-- Provider Package Format
-- Signing Providers
-- Installing Providers
+- Integration Package Format
+- Signing Integrations
+- Installing Integrations
 - Registry Configuration
-- Provider Lifecycle
+- Integration Lifecycle
 
 ---
 
@@ -332,8 +332,8 @@ Sections:
 
 Rules:
 
-- providers must be signed
-- providers must match trusted publisher keys
+- integrations must be signed
+- integrations must match trusted publisher keys
 - registry downloads must verify checksums
 - plugins remain loaded only at startup
 
@@ -354,11 +354,11 @@ make checkpoint
 
 Phase 30 must not include:
 
-- auto-updating providers
+- auto-updating integrations
 - remote execution
 - sandboxing
-- WASM providers
-- provider marketplace UI
+- WASM integrations
+- integration marketplace UI
 
 ---
 
@@ -366,12 +366,12 @@ Phase 30 must not include:
 
 All conditions must be met:
 
-- provider package format implemented
-- provider signature verification implemented
-- provider installer implemented
-- provider CLI commands implemented
-- provider registry client implemented
-- provider catalog reflects installed providers
-- provider installation tests pass
+- integration package format implemented
+- integration signature verification implemented
+- integration installer implemented
+- integration CLI commands implemented
+- integration registry client implemented
+- integration catalog reflects installed integrations
+- integration installation tests pass
 - documentation complete
 - checkpoint pipeline passes

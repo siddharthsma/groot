@@ -8,6 +8,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
+
+	eventpkg "groot/internal/event"
 	"groot/internal/schema"
 )
 
@@ -82,6 +85,7 @@ func (s *Service) Validate(ctx context.Context, eventType string, raw json.RawMe
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse schema: %w", err)
 	}
+	root = buildFilterSchemaRoot(root)
 	validationErr := ValidationError{}
 	validateAgainstSchema(filter, root, &validationErr)
 	if len(validationErr.InvalidPaths) > 0 || len(validationErr.InvalidOps) > 0 {
@@ -110,7 +114,7 @@ func Marshal(filter Filter) (json.RawMessage, error) {
 	return json.RawMessage(body), nil
 }
 
-func Evaluate(raw json.RawMessage, payload json.RawMessage) (bool, error) {
+func Evaluate(raw json.RawMessage, event eventpkg.Event) (bool, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return true, nil
 	}
@@ -118,13 +122,10 @@ func Evaluate(raw json.RawMessage, payload json.RawMessage) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var decoded any
-	if len(payload) > 0 {
-		if err := json.Unmarshal(payload, &decoded); err != nil {
-			return false, fmt.Errorf("decode payload: %w", err)
-		}
+	root, err := buildFilterContext(event)
+	if err != nil {
+		return false, err
 	}
-	root, _ := decoded.(map[string]any)
 	return evalFilter(filter, root), nil
 }
 
@@ -179,17 +180,27 @@ func validateStructure(filter Filter, depth int, counts *counter) error {
 
 func validatePath(path string) error {
 	trimmed := strings.TrimSpace(path)
-	if !strings.HasPrefix(trimmed, "payload.") {
-		return errors.New("path must start with payload.")
+	switch {
+	case strings.HasPrefix(trimmed, "payload."):
+	case strings.HasPrefix(trimmed, "source."):
+	case strings.HasPrefix(trimmed, "lineage."):
+	default:
+		return errors.New("path must start with payload., source., or lineage.")
 	}
 	if strings.Contains(trimmed, "[") || strings.Contains(trimmed, "]") || strings.Contains(trimmed, "*") {
 		return errors.New("arrays are not supported")
 	}
-	parts := strings.Split(strings.TrimPrefix(trimmed, "payload."), ".")
+	parts := strings.Split(pathWithoutPrefix(trimmed), ".")
 	for _, part := range parts {
 		if strings.TrimSpace(part) == "" {
 			return errors.New("empty path segment")
 		}
+	}
+	if strings.HasPrefix(trimmed, "source.") && !allowedSourcePath(trimmed) {
+		return errors.New("unsupported source path")
+	}
+	if strings.HasPrefix(trimmed, "lineage.") && !allowedLineagePath(trimmed) {
+		return errors.New("unsupported lineage path")
 	}
 	return nil
 }
@@ -259,12 +270,12 @@ func parseFilterValue(value any) (Filter, error) {
 	return Group{Not: child}, nil
 }
 
-func evalFilter(filter Filter, payload map[string]any) bool {
+func evalFilter(filter Filter, root map[string]any) bool {
 	switch typed := filter.(type) {
 	case Group:
 		if len(typed.All) > 0 {
 			for _, child := range typed.All {
-				if !evalFilter(child, payload) {
+				if !evalFilter(child, root) {
 					return false
 				}
 			}
@@ -272,17 +283,17 @@ func evalFilter(filter Filter, payload map[string]any) bool {
 		}
 		if len(typed.Any) > 0 {
 			for _, child := range typed.Any {
-				if evalFilter(child, payload) {
+				if evalFilter(child, root) {
 					return true
 				}
 			}
 			return false
 		}
 		if typed.Not != nil {
-			return !evalFilter(typed.Not, payload)
+			return !evalFilter(typed.Not, root)
 		}
 	case Condition:
-		value, ok := resolvePayloadValue(payload, typed.Path)
+		value, ok := resolveValue(root, typed.Path)
 		return compareCondition(ok, value, typed)
 	}
 	return false
@@ -337,9 +348,9 @@ func compareCondition(found bool, actual any, condition Condition) bool {
 	}
 }
 
-func resolvePayloadValue(payload map[string]any, path string) (any, bool) {
-	current := any(payload)
-	for _, part := range strings.Split(strings.TrimPrefix(strings.TrimSpace(path), "payload."), ".") {
+func resolveValue(root map[string]any, path string) (any, bool) {
+	current := any(root)
+	for _, part := range strings.Split(strings.TrimSpace(path), ".") {
 		obj, ok := current.(map[string]any)
 		if !ok {
 			return nil, false
@@ -458,7 +469,7 @@ func validateAgainstSchema(filter Filter, root schemaNode, out *ValidationError)
 
 func resolveSchemaPath(root schemaNode, path string) (schemaNode, bool) {
 	current := root
-	for _, part := range strings.Split(strings.TrimPrefix(path, "payload."), ".") {
+	for _, part := range strings.Split(strings.TrimSpace(path), ".") {
 		child, ok := current.Properties[part]
 		if ok {
 			current = child
@@ -533,6 +544,100 @@ func appendUnique(values []string, candidate string) []string {
 		}
 	}
 	return append(values, candidate)
+}
+
+func buildFilterContext(event eventpkg.Event) (map[string]any, error) {
+	root := map[string]any{
+		"source": map[string]any{
+			"kind":                event.Source.Kind,
+			"integration":         event.Source.Integration,
+			"connection_id":       optionalUUIDString(event.Source.ConnectionID),
+			"connection_name":     event.Source.ConnectionName,
+			"external_account_id": event.Source.ExternalAccountID,
+		},
+	}
+	if event.Lineage != nil {
+		root["lineage"] = map[string]any{
+			"integration":         event.Lineage.Integration,
+			"connection_id":       optionalUUIDString(event.Lineage.ConnectionID),
+			"connection_name":     event.Lineage.ConnectionName,
+			"external_account_id": event.Lineage.ExternalAccountID,
+		}
+	}
+	var payload any
+	if len(event.Payload) > 0 {
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return nil, fmt.Errorf("decode payload: %w", err)
+		}
+	}
+	root["payload"] = payload
+	return root, nil
+}
+
+func buildFilterSchemaRoot(payload schemaNode) schemaNode {
+	return schemaNode{
+		Kind: "object",
+		Properties: map[string]schemaNode{
+			"payload": payload,
+			"source": {
+				Kind: "object",
+				Properties: map[string]schemaNode{
+					"kind":                {Kind: "string"},
+					"integration":         {Kind: "string"},
+					"connection_id":       {Kind: "string"},
+					"connection_name":     {Kind: "string"},
+					"external_account_id": {Kind: "string"},
+				},
+			},
+			"lineage": {
+				Kind: "object",
+				Properties: map[string]schemaNode{
+					"integration":         {Kind: "string"},
+					"connection_id":       {Kind: "string"},
+					"connection_name":     {Kind: "string"},
+					"external_account_id": {Kind: "string"},
+				},
+			},
+		},
+	}
+}
+
+func pathWithoutPrefix(path string) string {
+	switch {
+	case strings.HasPrefix(path, "payload."):
+		return strings.TrimPrefix(path, "payload.")
+	case strings.HasPrefix(path, "source."):
+		return strings.TrimPrefix(path, "source.")
+	case strings.HasPrefix(path, "lineage."):
+		return strings.TrimPrefix(path, "lineage.")
+	default:
+		return path
+	}
+}
+
+func allowedSourcePath(path string) bool {
+	switch path {
+	case "source.kind", "source.integration", "source.connection_id", "source.connection_name", "source.external_account_id":
+		return true
+	default:
+		return false
+	}
+}
+
+func allowedLineagePath(path string) bool {
+	switch path {
+	case "lineage.integration", "lineage.connection_id", "lineage.connection_name", "lineage.external_account_id":
+		return true
+	default:
+		return false
+	}
+}
+
+func optionalUUIDString(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return id.String()
 }
 
 func boolToInt(value bool) int {

@@ -3,22 +3,22 @@
 
 ## Goal
 
-Introduce a **formal Provider Framework** that standardizes how connectors/providers are implemented, registered, tested, and documented.
+Introduce a **formal Integration Framework** that standardizes how connectors/integrations are implemented, registered, tested, and documented.
 
 Phase 27 ensures that:
 
-- all providers follow a consistent structure
-- providers expose a machine-readable specification
-- providers register through a central registry
-- provider configuration and operations are validated consistently
-- developers can easily add new providers
+- all integrations follow a consistent structure
+- integrations expose a machine-readable specification
+- integrations register through a central registry
+- integration configuration and operations are validated consistently
+- developers can easily add new integrations
 
 This phase does **not** introduce a plugin system.
-Providers remain compiled into the Groot binary.
+Integrations remain compiled into the Groot binary.
 
 No API changes.
 No schema changes.
-No behavior changes for existing providers.
+No behavior changes for existing integrations.
 
 ---
 
@@ -26,13 +26,13 @@ No behavior changes for existing providers.
 
 Phase 27 implements:
 
-1. Canonical provider specification model
-2. Provider registry system
-3. Standardized provider directory structure
-4. Provider scaffolding generator
-5. Provider conformance test harness
-6. Provider authoring documentation
-7. Migration of existing providers to the new framework
+1. Canonical integration specification model
+2. Integration registry system
+3. Standardized integration directory structure
+4. Integration scaffolding generator
+5. Integration conformance test harness
+6. Integration authoring documentation
+7. Migration of existing integrations to the new framework
 
 ---
 
@@ -40,32 +40,32 @@ Phase 27 implements:
 
 Rules:
 
-- every provider must expose a **ProviderSpec**
-- providers must register through the central registry
-- providers must follow the canonical directory structure
-- provider configuration must be validated by the provider itself
-- schemas owned by providers must be declared in the provider spec
-- providers must pass the conformance test harness
+- every integration must expose a **IntegrationSpec**
+- integrations must register through the central registry
+- integrations must follow the canonical directory structure
+- integration configuration must be validated by the integration itself
+- schemas owned by integrations must be declared in the integration spec
+- integrations must pass the conformance test harness
 
-Providers must not implement ad-hoc behavior outside the framework.
+Integrations must not implement ad-hoc behavior outside the framework.
 
 ---
 
-# Provider Specification Model
+# Integration Specification Model
 
-Create canonical provider specification types.
+Create canonical integration specification types.
 
 Location:
 
-internal/connectors/provider
+internal/connectors/integration
 
 Add:
 
-provider_spec.go
+integration_spec.go
 
 Define:
 
-type ProviderSpec struct {
+type IntegrationSpec struct {
     Name string
 
     SupportsTenantScope bool
@@ -101,7 +101,7 @@ type ConfigField struct {
 Rules:
 
 - secret fields must be explicitly declared
-- provider must validate config against ConfigSpec
+- integration must validate config against ConfigSpec
 
 ---
 
@@ -152,28 +152,28 @@ type SchemaSpec struct {
     Version int
 }
 
-Provider must declare all schemas it owns.
+Integration must declare all schemas it owns.
 
 ---
 
-# Provider Interface
+# Integration Interface
 
-Each provider must implement:
+Each integration must implement:
 
-type Provider interface {
+type Integration interface {
 
-    Spec() ProviderSpec
+    Spec() IntegrationSpec
 
     ValidateConfig(config map[string]any) error
 
     ExecuteOperation(ctx context.Context, op OperationRequest) (OperationResult, error)
 }
 
-Inbound providers may additionally implement inbound helpers.
+Inbound integrations may additionally implement inbound helpers.
 
 ---
 
-# Provider Registry
+# Integration Registry
 
 Create central registry.
 
@@ -187,91 +187,91 @@ registry.go
 
 Define:
 
-func RegisterProvider(p Provider)
-func GetProvider(name string) Provider
-func ListProviders() []Provider
+func RegisterIntegration(p Integration)
+func GetIntegration(name string) Integration
+func ListIntegrations() []Integration
 
 Rules:
 
-- every provider must register itself in init()
-- duplicate provider names must panic at startup
+- every integration must register itself in init()
+- duplicate integration names must panic at startup
 
 ---
 
-# Provider Directory Structure
+# Integration Directory Structure
 
-All providers must follow the same structure.
+All integrations must follow the same structure.
 
 Location:
 
-internal/connectors/providers/<provider>
+internal/integrations/<integration>
 
 Example:
 
-internal/connectors/providers/slack
-internal/connectors/providers/resend
-internal/connectors/providers/stripe
-internal/connectors/providers/notion
-internal/connectors/providers/llm
+internal/integrations/slack
+internal/integrations/resend
+internal/integrations/stripe
+internal/integrations/notion
+internal/integrations/llm
 
-Each provider must contain:
+Each integration must contain:
 
-provider.go
+integration.go
 config.go
 inbound.go        (if applicable)
 operations.go
 schemas.go
 validate.go
-provider_test.go
+integration_test.go
 README.md
 
 Rules:
 
-- provider.go exposes Spec() and registers provider
+- integration.go exposes Spec() and registers integration
 - config.go defines config validation
 - operations.go implements outbound operations
 - inbound.go implements webhook/event ingestion
 - schemas.go declares schema bundle
 - validate.go validates config
-- provider_test.go runs conformance tests
+- integration_test.go runs conformance tests
 
 ---
 
-# Provider Scaffolding Generator
+# Integration Scaffolding Generator
 
 Add generator script.
 
 Location:
 
-scripts/new-provider.sh
+scripts/new-integration.sh
 
 Usage:
 
-scripts/new-provider.sh <provider_name>
+scripts/new-integration.sh <integration_name>
 
 The script must generate:
 
-internal/connectors/providers/<name>/
-    provider.go
+internal/integrations/<name>/
+    integration.go
     config.go
     inbound.go
     operations.go
     schemas.go
     validate.go
-    provider_test.go
+    integration_test.go
     README.md
 
 Files must contain minimal working stubs.
 
 ---
 
-# Provider Conformance Tests
+# Integration Conformance Tests
 
-Create provider test harness.
+Create integration test harness.
 
 Location:
 
-internal/connectors/provider/testsuite
+internal/connectors/integration/testsuite
 
 Add:
 
@@ -279,29 +279,29 @@ conformance.go
 
 Tests must validate:
 
-- ProviderSpec is valid
-- provider name is unique
+- IntegrationSpec is valid
+- integration name is unique
 - config fields are declared correctly
 - secret fields marked correctly
 - operations declared in spec
 - schema bundle declared
-- provider registers successfully
-- provider ValidateConfig works
+- integration registers successfully
+- integration ValidateConfig works
 
-Each provider test must call:
+Each integration test must call:
 
-provider_testsuite.RunProviderTests(t, provider)
+integration_testsuite.RunIntegrationTests(t, integration)
 
 ---
 
-# Provider Schema Declaration
+# Integration Schema Declaration
 
-Providers must declare schemas they own.
+Integrations must declare schemas they own.
 
-Example in provider:
+Example in integration:
 
-func (p *SlackProvider) Spec() ProviderSpec {
-    return ProviderSpec{
+func (p *SlackIntegration) Spec() IntegrationSpec {
+    return IntegrationSpec{
         Name: "slack",
         Operations: []OperationSpec{
             {Name: "post_message"},
@@ -319,11 +319,11 @@ Rules:
 
 ---
 
-# Migration of Existing Providers
+# Migration of Existing Integrations
 
-Update existing providers to conform to the new framework:
+Update existing integrations to conform to the new framework:
 
-Providers include:
+Integrations include:
 
 resend
 slack
@@ -331,13 +331,13 @@ stripe
 notion
 llm
 
-For each provider:
+For each integration:
 
-1. create provider spec
+1. create integration spec
 2. move config validation into ValidateConfig
 3. move operations into operations.go
 4. declare schemas
-5. register provider in registry
+5. register integration in registry
 6. add conformance test
 
 Behavior must remain unchanged.
@@ -346,11 +346,11 @@ Behavior must remain unchanged.
 
 # Documentation
 
-Add provider documentation.
+Add integration documentation.
 
 Location:
 
-docs/providers
+docs/integrations
 
 Add:
 
@@ -361,18 +361,18 @@ examples.md
 
 Content must explain:
 
-- what a provider is
-- provider lifecycle
-- inbound vs outbound providers
+- what a integration is
+- integration lifecycle
+- inbound vs outbound integrations
 - config validation
 - schema declaration
 - testing requirements
 
 ---
 
-# Provider README Template
+# Integration README Template
 
-Each provider directory must include README.md.
+Each integration directory must include README.md.
 
 Required sections:
 
@@ -388,12 +388,12 @@ Testing
 
 # Build Integration
 
-Provider registry must be initialized automatically.
+Integration registry must be initialized automatically.
 
 Startup must verify:
 
-- provider names are unique
-- provider specs are valid
+- integration names are unique
+- integration specs are valid
 - declared schemas exist
 
 Startup must fail if validation fails.
@@ -409,7 +409,7 @@ go test ./...
 go vet ./...
 make checkpoint
 
-Provider conformance tests must run as part of the test suite.
+Integration conformance tests must run as part of the test suite.
 
 ---
 
@@ -418,13 +418,13 @@ Provider conformance tests must run as part of the test suite.
 Phase 27 must not include:
 
 - plugin system
-- dynamic provider loading
-- external provider distribution
-- provider marketplace UI
+- dynamic integration loading
+- external integration distribution
+- integration marketplace UI
 - WASM execution
-- runtime provider installation
+- runtime integration installation
 
-Providers remain compiled into Groot.
+Integrations remain compiled into Groot.
 
 ---
 
@@ -432,11 +432,11 @@ Providers remain compiled into Groot.
 
 All conditions must be met:
 
-- canonical provider specification implemented
-- provider registry implemented
-- all existing providers migrated to framework
+- canonical integration specification implemented
+- integration registry implemented
+- all existing integrations migrated to framework
 - scaffolding script created
 - conformance test harness implemented
-- provider documentation added
-- providers follow standardized directory structure
+- integration documentation added
+- integrations follow standardized directory structure
 - build and tests pass

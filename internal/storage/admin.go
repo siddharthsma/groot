@@ -2,19 +2,18 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/delivery"
 	"groot/internal/event"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
 )
 
-func (d *DB) ListConnectorInstancesAdmin(ctx context.Context, tenantID *tenant.ID, connectorName, scope string) ([]connectorinstance.Instance, error) {
+func (d *DB) ListConnectionsAdmin(ctx context.Context, tenantID *tenant.ID, connectorName, scope string) ([]connection.Instance, error) {
 	query := `
 		SELECT id, tenant_id, owner_tenant_id, connector_name, scope, status, config_json, created_at, updated_at
 		FROM connector_instances
@@ -40,14 +39,14 @@ func (d *DB) ListConnectorInstancesAdmin(ctx context.Context, tenantID *tenant.I
 	query += " ORDER BY created_at ASC"
 	rows, err := d.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list admin connector instances: %w", err)
+		return nil, fmt.Errorf("list admin connections: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
-	var instances []connectorinstance.Instance
+	var instances []connection.Instance
 	for rows.Next() {
-		var instance connectorinstance.Instance
-		if err := scanConnectorInstance(rows, &instance); err != nil {
-			return nil, fmt.Errorf("scan admin connector instance: %w", err)
+		var instance connection.Instance
+		if err := scanConnection(rows, &instance); err != nil {
+			return nil, fmt.Errorf("scan admin connection: %w", err)
 		}
 		instances = append(instances, instance)
 	}
@@ -96,7 +95,9 @@ func (d *DB) ListSubscriptionsAdmin(ctx context.Context, tenantID *tenant.ID, ev
 
 func (d *DB) ListEventsAdmin(ctx context.Context, tenantID tenant.ID, eventType string, from, to *time.Time, limit int) ([]event.Event, error) {
 	query := `
-		SELECT event_id, tenant_id, type, source, source_kind, chain_depth, timestamp, payload, schema_full_name, schema_version
+		SELECT event_id, tenant_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
+		       lineage_integration, lineage_connection_id, lineage_connection_name, lineage_external_account_id,
+		       chain_depth, timestamp, payload, schema_full_name, schema_version
 		FROM events
 		WHERE tenant_id = $1
 	`
@@ -127,16 +128,8 @@ func (d *DB) ListEventsAdmin(ctx context.Context, tenantID tenant.ID, eventType 
 	var events []event.Event
 	for rows.Next() {
 		var event event.Event
-		var payload []byte
-		var schemaFullName sql.NullString
-		var schemaVersion sql.NullInt64
-		if err := rows.Scan(&event.EventID, &event.TenantID, &event.Type, &event.Source, &event.SourceKind, &event.ChainDepth, &event.Timestamp, &payload, &schemaFullName, &schemaVersion); err != nil {
+		if err := scanEvent(rows, &event); err != nil {
 			return nil, fmt.Errorf("scan admin event: %w", err)
-		}
-		event.Payload = payload
-		event.SchemaFullName = nullableStringValue(schemaFullName)
-		if schemaVersion.Valid {
-			event.SchemaVersion = int(schemaVersion.Int64)
 		}
 		events = append(events, event)
 	}

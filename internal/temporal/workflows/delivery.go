@@ -3,6 +3,7 @@ package workflows
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -11,11 +12,12 @@ import (
 
 	"groot/internal/agent"
 	"groot/internal/config"
-	llmconnector "groot/internal/connectors/providers/llm"
-	notionconnector "groot/internal/connectors/providers/notion"
-	resendconnector "groot/internal/connectors/providers/resend"
-	slackconnector "groot/internal/connectors/providers/slack"
 	eventpkg "groot/internal/event"
+	"groot/internal/integrations/llm"
+	"groot/internal/integrations/notion"
+	"groot/internal/integrations/registry"
+	"groot/internal/integrations/resend"
+	"groot/internal/integrations/slack"
 	"groot/internal/temporal/activities"
 )
 
@@ -91,10 +93,10 @@ func DeliveryWorkflow(ctx workflow.Context, deliveryJobID string, maxAttempts in
 				"response_body_sha256": result.ResponseBodySHA,
 			})
 		}
-	case "connector":
-		connectorName = llmconnector.ConnectorName
+	case "connection":
+		connectorName = llm.IntegrationName
 		operation = sub.Operation
-		if sub.Operation == llmconnector.OperationAgent {
+		if sub.Operation == llm.OperationAgent {
 			agentID = sub.AgentID
 			sourceEvent := activityEventToStreamEvent(event)
 			sessionKey = agent.ResolveSessionKey(sub.SessionKeyTemplate, sourceEvent)
@@ -117,13 +119,20 @@ func DeliveryWorkflow(ctx workflow.Context, deliveryJobID string, maxAttempts in
 				sessionKey = result.SessionKey
 			}
 		} else {
-			var instance activities.ConnectorInstance
-			if loadErr := workflow.ExecuteActivity(ctx, "LoadConnectorInstance", sub.ConnectorInstanceID, job.TenantID).Get(ctx, &instance); loadErr != nil {
-				return nonRetryableTerminal(ctx, deliveryJobID, attempt, fmt.Sprintf("load connector instance: %v", loadErr), nil, job, sub, event, connectorName, operation)
+			resolvedConnectionID := sub.ConnectionID
+			if strings.TrimSpace(resolvedConnectionID) == "" {
+				resolvedConnectionID = defaultConnectionIDForEvent(sub.Operation, event)
 			}
-			connectorName = instance.ConnectorName
-			var result activities.ConnectorResult
-			err = workflow.ExecuteActivity(ctx, activities.ExecuteConnectorName, job.ID, job.TenantID, event, instance, sub.Operation, sub.OperationParams, attempt).Get(ctx, &result)
+			if strings.TrimSpace(resolvedConnectionID) == "" {
+				return nonRetryableTerminal(ctx, deliveryJobID, attempt, "load connection: no default connection available", nil, job, sub, event, connectorName, operation)
+			}
+			var instance activities.Connection
+			if loadErr := workflow.ExecuteActivity(ctx, "LoadConnection", resolvedConnectionID, job.TenantID).Get(ctx, &instance); loadErr != nil {
+				return nonRetryableTerminal(ctx, deliveryJobID, attempt, fmt.Sprintf("load connection: %v", loadErr), nil, job, sub, event, connectorName, operation)
+			}
+			connectorName = instance.IntegrationName
+			var result activities.ConnectionResult
+			err = workflow.ExecuteActivity(ctx, activities.ExecuteIntegrationName, job.ID, job.TenantID, event, instance, sub.Operation, sub.OperationParams, attempt).Get(ctx, &result)
 			if err == nil {
 				if result.ExternalID != "" {
 					externalID = &result.ExternalID
@@ -180,7 +189,7 @@ func nonRetryableTerminal(ctx workflow.Context, deliveryJobID string, attempt in
 	}
 	if shouldEmitFailure(sub, connectorName, operation) {
 		sessionKey := ""
-		if connectorName == llmconnector.ConnectorName && operation == llmconnector.OperationAgent {
+		if connectorName == llm.IntegrationName && operation == llm.OperationAgent {
 			sessionKey = agent.ResolveSessionKey(sub.SessionKeyTemplate, activityEventToStreamEvent(event))
 		}
 		_ = workflow.ExecuteActivity(ctx, "EmitResultEvent", buildResultEventRequest(job, sub, event, connectorName, operation, eventpkg.ResultStatusFailed, nil, nil, message, "failed", nil, lastStatusCode, sub.AgentID, "", sessionKey)).Get(ctx, nil)
@@ -204,7 +213,7 @@ func buildResultEventRequest(job activities.DeliveryJob, sub activities.Subscrip
 		InputEventID:          job.EventID,
 		ExistingResultEventID: job.ResultEventID,
 		InputEvent:            event,
-		ConnectorName:         connectorName,
+		IntegrationName:       connectorName,
 		Operation:             operation,
 		Status:                status,
 		ExternalID:            externalID,
@@ -219,35 +228,49 @@ func buildResultEventRequest(job activities.DeliveryJob, sub activities.Subscrip
 	}
 }
 
-func connectorOutput(connectorName, operation string, result activities.ConnectorResult) ([]byte, error) {
-	if len(result.Output) > 0 {
+func connectorOutput(connectorName, operation string, result activities.ConnectionResult) ([]byte, error) {
+	if len(result.Output) > 0 && connectorName != llm.IntegrationName {
 		return result.Output, nil
 	}
 	var payload map[string]any
 	switch connectorName {
-	case llmconnector.ConnectorName:
-		payload = map[string]any{
-			"text":     result.Text,
-			"provider": result.Provider,
-			"model":    result.Model,
-			"usage": map[string]any{
+	case llm.IntegrationName:
+		switch operation {
+		case llm.OperationGenerate, llm.OperationSummarize:
+			if len(result.Output) > 0 {
+				if err := json.Unmarshal(result.Output, &payload); err != nil {
+					return nil, err
+				}
+			} else {
+				payload = map[string]any{"text": result.Text}
+			}
+			payload["integration"] = result.Integration
+			payload["model"] = result.Model
+			payload["usage"] = map[string]any{
 				"prompt_tokens":     result.Usage.PromptTokens,
 				"completion_tokens": result.Usage.CompletionTokens,
 				"total_tokens":      result.Usage.TotalTokens,
-			},
+			}
+		case llm.OperationClassify, llm.OperationExtract, llm.OperationAgent:
+			if len(result.Output) > 0 {
+				return result.Output, nil
+			}
+			payload = map[string]any{}
+		default:
+			payload = map[string]any{}
 		}
-	case slackconnector.ConnectorName:
+	case slack.IntegrationName:
 		payload = map[string]any{
 			"channel": result.Channel,
 			"ts":      result.ExternalID,
 		}
-	case resendconnector.ConnectorName:
+	case resend.IntegrationName:
 		payload = map[string]any{
 			"email_id": result.ExternalID,
 		}
-	case notionconnector.ConnectorName:
+	case notion.IntegrationName:
 		key := "page_id"
-		if operation == notionconnector.OperationAppendBlock {
+		if operation == notion.OperationAppendBlock {
 			key = "block_id"
 		}
 		payload = map[string]any{key: result.ExternalID}
@@ -264,10 +287,35 @@ func activityEventToStreamEvent(event activities.Event) eventpkg.Event {
 		Type:       event.Type,
 		Source:     event.Source,
 		SourceKind: event.SourceKind,
+		Lineage:    event.Lineage,
 		ChainDepth: event.ChainDepth,
 		Timestamp:  event.Timestamp,
 		Payload:    event.Payload,
 	}
+}
+
+func defaultConnectionIDForEvent(operation string, event activities.Event) string {
+	targetIntegration, ok := registry.FindIntegrationByOperation(operation)
+	if !ok {
+		return ""
+	}
+	originIntegration := strings.TrimSpace(event.Source.Integration)
+	originConnectionID := optionalActivityUUID(event.Source.ConnectionID)
+	if event.Lineage != nil && strings.TrimSpace(event.Lineage.Integration) != "" {
+		originIntegration = strings.TrimSpace(event.Lineage.Integration)
+		originConnectionID = optionalActivityUUID(event.Lineage.ConnectionID)
+	}
+	if originIntegration == "" || originConnectionID == "" || targetIntegration != originIntegration {
+		return ""
+	}
+	return originConnectionID
+}
+
+func optionalActivityUUID(id *uuid.UUID) string {
+	if id == nil {
+		return ""
+	}
+	return id.String()
 }
 
 func uuidFromString(value string) uuid.UUID {

@@ -27,7 +27,9 @@ type Request struct {
 	TenantID   tenant.ID
 	Type       string
 	Source     string
+	SourceInfo eventpkg.Source
 	SourceKind string
+	Lineage    *eventpkg.Lineage
 	ChainDepth int
 	Payload    json.RawMessage
 }
@@ -94,9 +96,15 @@ func (s *Service) Ingest(ctx context.Context, req Request) (eventpkg.Event, erro
 		return eventpkg.Event{}, ErrInvalidVersionedType
 	}
 
-	source := strings.TrimSpace(req.Source)
-	if source == "" {
+	source := eventpkg.NormalizeSource(req.SourceInfo, normalizeSourceKind(req.SourceKind))
+	if source.Integration == "" {
+		source.Integration = strings.TrimSpace(req.Source)
+	}
+	if source.Integration == "" {
 		return eventpkg.Event{}, ErrInvalidSource
+	}
+	if source.Kind == "" {
+		return eventpkg.Event{}, ErrInvalidSourceKind
 	}
 
 	payload := req.Payload
@@ -109,19 +117,17 @@ func (s *Service) Ingest(ctx context.Context, req Request) (eventpkg.Event, erro
 		TenantID:   req.TenantID,
 		Type:       eventType,
 		Source:     source,
-		SourceKind: normalizeSourceKind(req.SourceKind),
+		SourceKind: source.Kind,
+		Lineage:    eventpkg.NormalizeLineage(req.Lineage),
 		ChainDepth: req.ChainDepth,
 		Timestamp:  s.now(),
 		Payload:    payload,
-	}
-	if evt.SourceKind == "" {
-		return eventpkg.Event{}, ErrInvalidSourceKind
 	}
 	if evt.ChainDepth < 0 {
 		return eventpkg.Event{}, ErrInvalidChainDepth
 	}
 	if s.schemas != nil {
-		schema, err := s.schemas.ValidateEvent(ctx, evt.Type, evt.Source, evt.SourceKind, evt.Payload)
+		schema, err := s.schemas.ValidateEvent(ctx, evt.Type, evt.SourceIntegration(), evt.SourceKind, evt.Payload)
 		if err != nil {
 			return eventpkg.Event{}, err
 		}

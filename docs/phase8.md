@@ -2,7 +2,7 @@
 
 ## Goal
 
-Introduce connector instance scope and update routing so inbound and
+Introduce connection scope and update routing so inbound and
 outbound connectors support both patterns:
 
 -   tenant-scoped instances (BYO account)
@@ -10,7 +10,7 @@ outbound connectors support both patterns:
 
 Routing must resolve tenant deterministically without refactors later.
 
-No new providers required in this phase.
+No new integrations required in this phase.
 
 ------------------------------------------------------------------------
 
@@ -18,7 +18,7 @@ No new providers required in this phase.
 
 Phase 8 implements:
 
-1.  Schema updates for connector instance scope
+1.  Schema updates for connection scope
 2.  Generic inbound routing table for tenant resolution
 3.  Update Resend routing to use generic routing table
 4.  Update inbound webhook handlers to resolve tenant via routing table
@@ -31,7 +31,7 @@ Phase 8 implements:
 
 # Definitions
 
-## Connector Instance Scope
+## Connection Scope
 
 Allowed values:
 
@@ -53,7 +53,7 @@ GROOT_ALLOW_GLOBAL_INSTANCES=true
 
 If false:
 
--   subscriptions cannot reference global connector instances
+-   subscriptions cannot reference global connections
 -   global instances may still exist for system use
 
 ------------------------------------------------------------------------
@@ -64,7 +64,7 @@ Create migration:
 
 migrations/008_connector_scope_and_routing.sql
 
-## Connector Instances: scope + owner
+## Connections: scope + owner
 
 ALTER TABLE connector_instances ADD COLUMN scope TEXT NOT NULL DEFAULT
 'tenant', ADD COLUMN owner_tenant_id UUID;
@@ -102,7 +102,7 @@ CREATE INDEX inbound_routes_tenant_idx ON inbound_routes(tenant_id);
 
 Rules:
 
-route_key = provider-specific identifier used for routing.
+route_key = integration-specific identifier used for routing.
 
 connector_instance_id optional.
 
@@ -110,9 +110,9 @@ connector_instance_id optional.
 
 # API Changes
 
-## Connector Instances
+## Connections
 
-POST /connector-instances
+POST /connections
 
 Request:
 
@@ -132,7 +132,7 @@ Response:
 
 ------------------------------------------------------------------------
 
-GET /connector-instances
+GET /connections
 
 Tenant view includes:
 
@@ -274,7 +274,7 @@ groot_global_connector_deliveries_total{connector,operation}
 
 5 Verify events routed to correct tenants
 
-6 Create global Slack connector instance
+6 Create global Slack connection
 
 7 Create subscription using global instance
 
@@ -290,6 +290,6 @@ groot_global_connector_deliveries_total{connector,operation}
 -   inbound_routes table exists
 -   inbound connectors resolve tenants via inbound_routes
 -   Resend routing migrated
--   subscriptions support global connector instances
+-   subscriptions support global connections
 -   cross-tenant access prevented for tenant instances
 -   logs and metrics implemented

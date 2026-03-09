@@ -49,7 +49,7 @@ func TestPhase20Audit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read Makefile: %v", err)
 	}
-	requiredTargets := []string{"checkpoint-fast", "checkpoint-integration", "checkpoint-reset", "checkpoint-audit"}
+	requiredTargets := []string{"checkpoint-fast", "checkpoint-integration", "checkpoint-reset", "checkpoint-audit", "checkpoint-system"}
 	for _, target := range requiredTargets {
 		if !strings.Contains(string(makefileBody), target) {
 			t.Fatalf("Makefile missing target %s", target)
@@ -60,10 +60,12 @@ func TestPhase20Audit(t *testing.T) {
 	probes := []string{
 		"/healthz",
 		"/readyz",
+		"/integrations",
 		"/schemas",
 		"/tenants",
 		"/events",
 		"/deliveries",
+		"/connections",
 		"/connectors/resend/enable",
 		"/connectors/stripe/enable",
 		"/webhooks/resend",

@@ -42,7 +42,7 @@ Create migration:
 
 migrations/007_outbound_connectors.sql
 
-## Connector Instance Config
+## Connection Config
 
 ALTER TABLE connector_instances ADD COLUMN config_json JSONB NOT NULL
 DEFAULT '{}'::jsonb;
@@ -67,7 +67,7 @@ Rules:
 -   if destination_type=connector
     -   connector_instance_id required
     -   operation required
-    -   connector instance must belong to tenant
+    -   connection must belong to tenant
 
 Indexes:
 
@@ -209,9 +209,9 @@ last_status_code = HTTP status code
 
 ------------------------------------------------------------------------
 
-# Connector Instances API
+# Connections API
 
-POST /connector-instances
+POST /connections
 
 Request:
 
@@ -228,7 +228,7 @@ only one slack instance per tenant
 
 ------------------------------------------------------------------------
 
-GET /connector-instances
+GET /connections
 
 Response:
 
@@ -340,7 +340,7 @@ groot_connector_delivery_dead_letter_total{connector,operation}
 
 1.  Create tenant
 
-2.  Create Slack connector instance
+2.  Create Slack connection
 
 3.  Create subscription using connector
 

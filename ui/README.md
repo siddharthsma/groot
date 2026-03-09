@@ -25,8 +25,8 @@ Phase 31 sets up:
 
 - Next.js App Router with TypeScript
 - Tailwind CSS and shadcn/ui base components
-- React Query provider wiring
+- React Query integration wiring
 - API client scaffolding
-- graph, form, table, provider, event, and agent component directories
+- graph, form, table, integration, event, and agent component directories
 
 No product UI is implemented here yet. The routes and components are placeholders that establish the structure for later phases.

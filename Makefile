@@ -47,7 +47,7 @@ GO_RUN_ENV = \
 
 INTEGRATION_TEST_FLAGS = -tags=integration -count=1 -p 1 ./tests/integration
 
-.PHONY: up down logs build run test lint fmt health migrate checkpoint checkpoint-fast checkpoint-integration checkpoint-reset checkpoint-audit
+.PHONY: up down logs build run test lint fmt health migrate checkpoint checkpoint-fast checkpoint-integration checkpoint-reset checkpoint-audit checkpoint-system
 
 up:
 	docker compose up -d --build
@@ -85,7 +85,7 @@ checkpoint-integration:
 	@set -e; \
 	docker compose stop groot-api >/dev/null 2>&1 || true; \
 	trap 'docker compose start groot-api >/dev/null 2>&1 || true' EXIT; \
-	go test $(INTEGRATION_TEST_FLAGS) -run 'TestScenario|TestAPIKeyAndJWTAuthFlows'
+	go test $(INTEGRATION_TEST_FLAGS)
 
 checkpoint-reset:
 	@set -e; \
@@ -100,3 +100,16 @@ checkpoint-audit:
 	go test $(INTEGRATION_TEST_FLAGS) -run '^TestPhase20Audit$$'
 
 checkpoint: checkpoint-fast checkpoint-integration checkpoint-audit
+
+checkpoint-system:
+	$(MAKE) up
+	$(MAKE) migrate
+	go build ./...
+	go test ./...
+	go vet ./...
+	$(MAKE) checkpoint-integration
+	cd ui && pnpm install --frozen-lockfile
+	cd ui && pnpm lint
+	cd ui && pnpm typecheck
+	cd ui && pnpm build
+	cd ui && pnpm test

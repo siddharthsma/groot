@@ -21,7 +21,7 @@ func (d *DB) CreateSubscription(ctx context.Context, record subscription.Record)
 	actor := actorFromContext(ctx)
 	var sub subscription.Subscription
 	err := scanSubscription(
-		d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.ConnectedAppID, record.DestinationType, record.FunctionDestinationID, record.ConnectorInstanceID, record.AgentID, nullableString(optionalStringValue(record.SessionKeyTemplate)), record.SessionCreateIfMissing, record.Operation, []byte(record.OperationParams), jsonBytes(record.Filter), record.EventType, record.EventSource, record.EmitSuccessEvent, record.EmitFailureEvent, record.Status, record.CreatedAt, actor.Type, actor.ID, actor.Email),
+		d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.ConnectedAppID, record.DestinationType, record.FunctionDestinationID, record.ConnectionID, record.AgentID, nullableString(optionalStringValue(record.SessionKeyTemplate)), record.SessionCreateIfMissing, record.Operation, []byte(record.OperationParams), jsonBytes(record.Filter), record.EventType, record.EventSource, record.EmitSuccessEvent, record.EmitFailureEvent, record.Status, record.CreatedAt, actor.Type, actor.ID, actor.Email),
 		&sub,
 	)
 	if err != nil {
@@ -56,7 +56,7 @@ func (d *DB) UpdateSubscription(ctx context.Context, tenantID tenant.ID, subscri
 	`
 	actor := actorFromContext(ctx)
 	var sub subscription.Subscription
-	err := scanSubscription(d.db.QueryRowContext(ctx, query, subscriptionID, tenantID, record.ConnectedAppID, record.DestinationType, record.FunctionDestinationID, record.ConnectorInstanceID, record.AgentID, nullableString(optionalStringValue(record.SessionKeyTemplate)), record.SessionCreateIfMissing, record.Operation, []byte(record.OperationParams), jsonBytes(record.Filter), record.EventType, record.EventSource, record.EmitSuccessEvent, record.EmitFailureEvent, record.Status, actor.Type, actor.ID, actor.Email), &sub)
+	err := scanSubscription(d.db.QueryRowContext(ctx, query, subscriptionID, tenantID, record.ConnectedAppID, record.DestinationType, record.FunctionDestinationID, record.ConnectionID, record.AgentID, nullableString(optionalStringValue(record.SessionKeyTemplate)), record.SessionCreateIfMissing, record.Operation, []byte(record.OperationParams), jsonBytes(record.Filter), record.EventType, record.EventSource, record.EmitSuccessEvent, record.EmitFailureEvent, record.Status, actor.Type, actor.ID, actor.Email), &sub)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return subscription.Subscription{}, subscription.ErrSubscriptionNotFound
@@ -208,7 +208,7 @@ func scanSubscription(row scanner, sub *subscription.Subscription) error {
 
 	sub.ConnectedAppID = parseOptionalUUID(connectedAppID)
 	sub.FunctionDestinationID = parseOptionalUUID(functionDestinationID)
-	sub.ConnectorInstanceID = parseOptionalUUID(connectorInstanceID)
+	sub.ConnectionID = parseOptionalUUID(connectorInstanceID)
 	sub.AgentID = parseOptionalUUID(agentID)
 	if sessionKeyTemplate.Valid {
 		value := sessionKeyTemplate.String

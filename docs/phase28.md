@@ -3,12 +3,12 @@
 
 ## Goal
 
-Introduce a **Provider Catalog and Dynamic Discovery layer** so Groot can expose provider capabilities in a standardized, machine-readable way for operators, future UI flows, and future distribution models.
+Introduce a **Integration Catalog and Dynamic Discovery layer** so Groot can expose integration capabilities in a standardized, machine-readable way for operators, future UI flows, and future distribution models.
 
 Phase 28 does **not** implement external plugin loading.
-It builds the discovery/catalog surface on top of the Phase 27 Provider Framework.
+It builds the discovery/catalog surface on top of the Phase 27 Integration Framework.
 
-This phase makes providers:
+This phase makes integrations:
 
 - discoverable
 - inspectable
@@ -17,7 +17,7 @@ This phase makes providers:
 
 No UI.
 No external plugin runtime.
-No behavior changes to existing provider execution.
+No behavior changes to existing integration execution.
 
 ---
 
@@ -25,14 +25,14 @@ No behavior changes to existing provider execution.
 
 Phase 28 implements:
 
-1. Provider catalog service
-2. Provider discovery APIs
-3. Standardized provider capability responses
-4. Provider config schema exposure
-5. Provider operation/schema listing APIs
+1. Integration catalog service
+2. Integration discovery APIs
+3. Standardized integration capability responses
+4. Integration config schema exposure
+5. Integration operation/schema listing APIs
 6. Catalog validation at startup
-7. Provider documentation generation support
-8. Integration tests for provider discovery and consistency
+7. Integration documentation generation support
+8. Integration tests for integration discovery and consistency
 
 ---
 
@@ -40,18 +40,18 @@ Phase 28 implements:
 
 Rules:
 
-- providers remain compiled into the Groot binary
-- the catalog must be derived from registered ProviderSpecs
-- provider metadata exposed by APIs must be machine-readable and stable
-- no provider-specific ad-hoc discovery endpoints
+- integrations remain compiled into the Groot binary
+- the catalog must be derived from registered IntegrationSpecs
+- integration metadata exposed by APIs must be machine-readable and stable
+- no integration-specific ad-hoc discovery endpoints
 - no plugin loading
-- no runtime provider installation
+- no runtime integration installation
 
-The ProviderSpec becomes the single source of truth for provider discovery.
+The IntegrationSpec becomes the single source of truth for integration discovery.
 
 ---
 
-# Provider Catalog Service
+# Integration Catalog Service
 
 Create package:
 
@@ -65,10 +65,10 @@ types.go
 
 The catalog service must:
 
-- read all registered providers from the Phase 27 registry
-- normalize provider metadata into catalog response types
+- read all registered integrations from the Phase 27 registry
+- normalize integration metadata into catalog response types
 - validate uniqueness/consistency
-- expose provider details to HTTP APIs and docs generation
+- expose integration details to HTTP APIs and docs generation
 
 ---
 
@@ -76,9 +76,9 @@ The catalog service must:
 
 Define canonical catalog response types.
 
-## ProviderSummary
+## IntegrationSummary
 
-type ProviderSummary struct {
+type IntegrationSummary struct {
     Name string
     SupportsTenantScope bool
     SupportsGlobalScope bool
@@ -87,9 +87,9 @@ type ProviderSummary struct {
     SchemaCount int
 }
 
-## ProviderDetail
+## IntegrationDetail
 
-type ProviderDetail struct {
+type IntegrationDetail struct {
     Name string
     SupportsTenantScope bool
     SupportsGlobalScope bool
@@ -138,15 +138,15 @@ type SchemaCatalog struct {
 
 # Catalog Validation
 
-At startup, the catalog service must validate all registered providers.
+At startup, the catalog service must validate all registered integrations.
 
 Validation rules:
 
-1. provider names unique
-2. operation names unique within provider
-3. schema (event_type, version) pairs unique within provider
-4. provider scope flags valid
-5. config field names unique within provider
+1. integration names unique
+2. operation names unique within integration
+3. schema (event_type, version) pairs unique within integration
+4. integration scope flags valid
+5. config field names unique within integration
 6. inbound specs valid if present
 7. schema declarations must match schema registry
 
@@ -156,7 +156,7 @@ Startup must fail if catalog validation fails.
 
 # Discovery HTTP APIs
 
-Add tenant-safe read-only APIs for provider discovery.
+Add tenant-safe read-only APIs for integration discovery.
 
 Location:
 
@@ -164,9 +164,9 @@ internal/httpapi/system
 
 ---
 
-## List Providers
+## List Integrations
 
-GET /providers
+GET /integrations
 
 Response example:
 
@@ -183,35 +183,35 @@ Response example:
 
 ---
 
-## Get Provider Detail
+## Get Integration Detail
 
-GET /providers/{name}
+GET /integrations/{name}
 
-Returns provider configuration schema, operations, inbound metadata, and schemas.
-
----
-
-## List Provider Operations
-
-GET /providers/{name}/operations
+Returns integration configuration schema, operations, inbound metadata, and schemas.
 
 ---
 
-## List Provider Schemas
+## List Integration Operations
 
-GET /providers/{name}/schemas
+GET /integrations/{name}/operations
 
 ---
 
-## Get Provider Config Definition
+## List Integration Schemas
 
-GET /providers/{name}/config
+GET /integrations/{name}/schemas
+
+---
+
+## Get Integration Config Definition
+
+GET /integrations/{name}/config
 
 ---
 
 # Auth Model
 
-Provider discovery endpoints are **read-only diagnostics**.
+Integration discovery endpoints are **read-only diagnostics**.
 
 These endpoints may be **unauthenticated** because:
 
@@ -223,17 +223,17 @@ These endpoints may be **unauthenticated** because:
 
 # Schema Discovery Rules
 
-Provider schema listing must be derived from ProviderSpec and validated against the schema registry.
+Integration schema listing must be derived from IntegrationSpec and validated against the schema registry.
 
 Rules:
 
 - mismatches cause startup failure
 - versions must be explicit
-- only provider-owned schemas are listed
+- only integration-owned schemas are listed
 
 ---
 
-# Provider Docs Generation Support
+# Integration Docs Generation Support
 
 Add documentation generator helper.
 
@@ -247,11 +247,11 @@ generator.go
 
 Generator must produce:
 
-docs/providers/generated/<provider>.md
+docs/integrations/generated/<integration>.md
 
 Generated sections:
 
-- Provider Name
+- Integration Name
 - Supported Scopes
 - Inbound Events
 - Operations
@@ -264,17 +264,17 @@ Generated sections:
 
 Add script:
 
-scripts/generate-provider-docs.sh
+scripts/generate-integration-docs.sh
 
 Generated docs must be written to:
 
-docs/providers/generated/
+docs/integrations/generated/
 
 ---
 
-# Existing Provider Migration Requirements
+# Existing Integration Migration Requirements
 
-Ensure the following providers appear correctly in the catalog:
+Ensure the following integrations appear correctly in the catalog:
 
 - resend
 - slack
@@ -284,8 +284,8 @@ Ensure the following providers appear correctly in the catalog:
 
 Verify:
 
-- provider list endpoint
-- provider detail endpoint
+- integration list endpoint
+- integration detail endpoint
 - operations endpoint
 - schemas endpoint
 - config endpoint
@@ -306,7 +306,7 @@ These routes must remain read-only.
 
 Create integration tests:
 
-tests/integration/phase28_provider_catalog_test.go
+tests/integration/phase28_integration_catalog_test.go
 
 Add unit tests under:
 
@@ -314,12 +314,12 @@ internal/connectors/catalog
 
 Tests must verify:
 
-1. providers appear in catalog
-2. provider detail matches ProviderSpec
+1. integrations appear in catalog
+2. integration detail matches IntegrationSpec
 3. config definitions expose only metadata
 4. schema registry consistency
-5. duplicate provider names rejected
-6. generated provider docs succeed
+5. duplicate integration names rejected
+6. generated integration docs succeed
 
 ---
 
@@ -330,14 +330,14 @@ Update:
 README.md
 AGENTS.md
 docs/codebase_structure.md
-docs/providers/overview.md
+docs/integrations/overview.md
 
 Add sections describing:
 
-- Provider Catalog
-- Provider Discovery APIs
-- Generated Provider Docs
-- ProviderSpec metadata
+- Integration Catalog
+- Integration Discovery APIs
+- Generated Integration Docs
+- IntegrationSpec metadata
 
 ---
 
@@ -352,7 +352,7 @@ make checkpoint
 
 Also run:
 
-scripts/generate-provider-docs.sh
+scripts/generate-integration-docs.sh
 
 ---
 
@@ -361,10 +361,10 @@ scripts/generate-provider-docs.sh
 Phase 28 must not include:
 
 - dynamic plugin loading
-- external provider installation
-- provider marketplace UI
-- provider version negotiation
-- remote provider registry
+- external integration installation
+- integration marketplace UI
+- integration version negotiation
+- remote integration registry
 - WASM/plugin runtime
 
 ---
@@ -373,12 +373,12 @@ Phase 28 must not include:
 
 All conditions must be met:
 
-- provider catalog service implemented
-- provider discovery APIs implemented
-- provider metadata derived from ProviderSpec
-- startup validates provider/catalog consistency
-- provider config definitions exposed safely
-- provider schemas/operations discoverable via APIs
-- provider docs generation implemented
-- all existing providers visible through the catalog
+- integration catalog service implemented
+- integration discovery APIs implemented
+- integration metadata derived from IntegrationSpec
+- startup validates integration/catalog consistency
+- integration config definitions exposed safely
+- integration schemas/operations discoverable via APIs
+- integration docs generation implemented
+- all existing integrations visible through the catalog
 - build, tests, checkpoint, and doc generation all succeed

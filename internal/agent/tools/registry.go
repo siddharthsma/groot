@@ -9,16 +9,16 @@ import (
 )
 
 const (
-	ExecutionKindConnector = "connector"
-	ExecutionKindFunction  = "function"
+	ExecutionKindConnection = "connection"
+	ExecutionKindFunction   = "function"
 )
 
 type Definition struct {
-	Name          string
-	ExecutionKind string
-	ConnectorName string
-	Operation     string
-	InputSchema   json.RawMessage
+	Name            string
+	ExecutionKind   string
+	IntegrationName string
+	Operation       string
+	InputSchema     json.RawMessage
 
 	schema *jsonschema.Schema
 }
@@ -97,11 +97,11 @@ func (r *Registry) Validate(name string, args json.RawMessage) error {
 func connectorTool(name, connectorName, operation string, schema map[string]any) Definition {
 	body, _ := json.Marshal(schema)
 	return Definition{
-		Name:          name,
-		ExecutionKind: ExecutionKindConnector,
-		ConnectorName: connectorName,
-		Operation:     operation,
-		InputSchema:   body,
+		Name:            name,
+		ExecutionKind:   ExecutionKindConnection,
+		IntegrationName: connectorName,
+		Operation:       operation,
+		InputSchema:     body,
 	}
 }
 
@@ -110,11 +110,11 @@ func functionTool(name string) Definition {
 		"type": "object",
 	})
 	return Definition{
-		Name:          name,
-		ExecutionKind: ExecutionKindFunction,
-		ConnectorName: "function",
-		Operation:     "invoke",
-		InputSchema:   body,
+		Name:            name,
+		ExecutionKind:   ExecutionKindFunction,
+		IntegrationName: "function",
+		Operation:       "invoke",
+		InputSchema:     body,
 	}
 }
 

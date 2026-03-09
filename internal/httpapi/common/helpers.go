@@ -138,7 +138,7 @@ func MapJob(job delivery.Job) map[string]any {
 	}
 }
 
-func ParseSubscriptionRequestFields(connectedAppIDRaw, functionDestinationIDRaw, connectorInstanceIDRaw, agentIDRaw, operationRaw string) (*uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, error) {
+func ParseSubscriptionRequestFields(connectedAppIDRaw, functionDestinationIDRaw, connectionIDRaw, agentIDRaw, operationRaw string) (*uuid.UUID, *uuid.UUID, *uuid.UUID, *uuid.UUID, *string, error) {
 	var appID *uuid.UUID
 	if strings.TrimSpace(connectedAppIDRaw) != "" {
 		parsed, err := uuid.Parse(connectedAppIDRaw)
@@ -155,13 +155,13 @@ func ParseSubscriptionRequestFields(connectedAppIDRaw, functionDestinationIDRaw,
 		}
 		functionID = &parsed
 	}
-	var connectorInstanceID *uuid.UUID
-	if strings.TrimSpace(connectorInstanceIDRaw) != "" {
-		parsed, err := uuid.Parse(connectorInstanceIDRaw)
+	var connectionID *uuid.UUID
+	if strings.TrimSpace(connectionIDRaw) != "" {
+		parsed, err := uuid.Parse(connectionIDRaw)
 		if err != nil {
-			return nil, nil, nil, nil, nil, errors.New("invalid connector_instance_id")
+			return nil, nil, nil, nil, nil, errors.New("invalid connection_id")
 		}
-		connectorInstanceID = &parsed
+		connectionID = &parsed
 	}
 	var agentID *uuid.UUID
 	if strings.TrimSpace(agentIDRaw) != "" {
@@ -176,7 +176,7 @@ func ParseSubscriptionRequestFields(connectedAppIDRaw, functionDestinationIDRaw,
 		trimmed := strings.TrimSpace(operationRaw)
 		operation = &trimmed
 	}
-	return appID, functionID, connectorInstanceID, agentID, operation, nil
+	return appID, functionID, connectionID, agentID, operation, nil
 }
 
 func MustRawMessage(input json.RawMessage) json.RawMessage {

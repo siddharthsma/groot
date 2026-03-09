@@ -16,15 +16,7 @@ import (
 	authn "groot/internal/auth"
 	"groot/internal/config"
 	"groot/internal/connectedapp"
-	"groot/internal/connectorinstance"
-	"groot/internal/connectors/catalog"
-	"groot/internal/connectors/installer"
-	"groot/internal/connectors/pluginloader"
-	_ "groot/internal/connectors/providers/builtin"
-	"groot/internal/connectors/providers/resend"
-	slackconnector "groot/internal/connectors/providers/slack"
-	stripeconnector "groot/internal/connectors/providers/stripe"
-	"groot/internal/connectors/registry"
+	"groot/internal/connection"
 	"groot/internal/delivery"
 	"groot/internal/edition"
 	"groot/internal/event"
@@ -33,6 +25,14 @@ import (
 	"groot/internal/httpapi"
 	"groot/internal/inboundroute"
 	"groot/internal/ingest"
+	_ "groot/internal/integrations/builtin"
+	"groot/internal/integrations/catalog"
+	"groot/internal/integrations/installer"
+	"groot/internal/integrations/pluginloader"
+	"groot/internal/integrations/registry"
+	"groot/internal/integrations/resend"
+	"groot/internal/integrations/slack"
+	"groot/internal/integrations/stripe"
 	"groot/internal/observability"
 	"groot/internal/replay"
 	"groot/internal/router"
@@ -194,15 +194,15 @@ func bootstrapDependencies(
 		RegistrationMode: cfg.Runtime.Schema.RegistrationMode,
 		MaxPayloadBytes:  cfg.Runtime.Schema.MaxPayloadBytes,
 	}, logger, metrics)
-	installedProviders, err := installer.LoadInstalled(cfg.Runtime.ProviderInstalledPath)
+	installedIntegrations, err := installer.LoadInstalled(cfg.Runtime.IntegrationInstalledPath)
 	if err != nil {
 		temporalSDKClient.Close()
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load installed providers metadata: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load installed integrations metadata: %w", err)
 	}
-	pluginInstalled := make([]pluginloader.InstalledMetadata, 0, len(installedProviders.Providers))
-	for _, current := range installedProviders.Providers {
+	pluginInstalled := make([]pluginloader.InstalledMetadata, 0, len(installedIntegrations.Integrations))
+	for _, current := range installedIntegrations.Integrations {
 		pluginInstalled = append(pluginInstalled, pluginloader.InstalledMetadata{
 			Name:       current.Name,
 			Version:    current.Version,
@@ -210,19 +210,19 @@ func bootstrapDependencies(
 			PluginPath: current.PluginPath,
 		})
 	}
-	pluginLoader := pluginloader.New(cfg.Runtime.ProviderPluginDir, pluginInstalled, logger, schemaService)
+	pluginLoader := pluginloader.New(cfg.Runtime.IntegrationPluginDir, pluginInstalled, logger, schemaService)
 	if _, err := pluginLoader.Load(ctx); err != nil {
 		temporalSDKClient.Close()
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load provider plugins: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load integration plugins: %w", err)
 	}
 	if cfg.Runtime.Schema.RegistrationMode == schema.RegistrationModeStartup {
 		if err := registry.Validate(); err != nil {
 			temporalSDKClient.Close()
 			_ = kafkaClient.Close()
 			_ = db.Close()
-			return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate providers: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate integrations: %w", err)
 		}
 		bundles := append(schema.CoreBundles(), registry.BundlesBySource(registry.SourceCore)...)
 		if err := schemaService.RegisterBundles(ctx, bundles); err != nil {
@@ -236,12 +236,12 @@ func bootstrapDependencies(
 			}
 		}
 	}
-	providerCatalogService := catalog.NewService(schemaService)
-	if err := providerCatalogService.Validate(ctx); err != nil {
+	integrationCatalogService := catalog.NewService(schemaService)
+	if err := integrationCatalogService.Validate(ctx); err != nil {
 		temporalSDKClient.Close()
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate provider catalog: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate integration catalog: %w", err)
 	}
 
 	resultEmitter := event.NewEmitter(kafkaClient, db, logger, metrics, cfg.Runtime.MaxChainDepth, event.WithSchemaResolver(schemaService))
@@ -286,7 +286,7 @@ func bootstrapDependencies(
 
 	auditService := audit.NewService(db, cfg.Runtime.Audit.Enabled)
 	appService := connectedapp.NewService(db)
-	connectorInstanceService := connectorinstance.NewService(db, cfg.Runtime.AllowGlobalInstances, cfg.Runtime.LLM.DefaultProvider)
+	connectorInstanceService := connection.NewService(db, cfg.Runtime.AllowGlobalInstances, cfg.Runtime.LLM.DefaultIntegration)
 	inboundRouteService := inboundroute.NewService(db, metrics)
 	functionService := functiondestination.NewService(db)
 	agentService := agent.NewService(db, functionService)
@@ -309,8 +309,8 @@ func bootstrapDependencies(
 		MaxWindowHours: cfg.Runtime.Replay.MaxWindowHours,
 	}, metrics)
 	resendService := resend.NewService(cfg.Runtime.Resend, db, eventService, logger, metrics, nil)
-	slackService := slackconnector.NewService(cfg.Runtime.Slack, db, eventService, logger, metrics)
-	stripeService := stripeconnector.NewService(cfg.Runtime.Stripe, db, eventService, logger, metrics)
+	slackService := slack.NewService(cfg.Runtime.Slack, db, eventService, logger, metrics)
+	stripeService := stripe.NewService(cfg.Runtime.Stripe, db, eventService, logger, metrics)
 	routerConsumer := router.NewConsumer(cfg.Runtime.KafkaBrokers, cfg.Runtime.RouterConsumerGroup, db, logger, metrics)
 	deliveryPoller := delivery.NewPoller(db, temporalSDKClient, logger, cfg.Runtime.DeliveryRetry, cfg.Runtime.AgentRuntime, cfg.Runtime.DeliveryTaskQueue, metrics)
 
@@ -333,7 +333,7 @@ func bootstrapDependencies(
 		Apps:                     appService,
 		Functions:                functionService,
 		Subs:                     subscriptionService,
-		ConnectorInstances:       connectorInstanceService,
+		Connections:              connectorInstanceService,
 		InboundRoutes:            inboundRouteService,
 		EventSvc:                 eventService,
 		EventQuerySvc:            eventQueryService,
@@ -341,7 +341,7 @@ func bootstrapDependencies(
 		Replay:                   replayService,
 		AdminReplay:              adminReplayService,
 		Schemas:                  schemaService,
-		ProviderCatalog:          providerCatalogService,
+		IntegrationCatalog:       integrationCatalogService,
 		Resend:                   resendService,
 		Slack:                    slackService,
 		Stripe:                   stripeService,

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"groot/internal/connectors/installer"
+	"groot/internal/integrations/installer"
 )
 
 var BuildVersion = "dev"
@@ -25,7 +25,7 @@ func run(args []string) error {
 	if len(args) == 0 {
 		return usageError()
 	}
-	if args[0] != "provider" {
+	if args[0] != "integration" {
 		return usageError()
 	}
 	cfg := installer.ConfigFromEnv(BuildVersion)
@@ -64,11 +64,11 @@ func run(args []string) error {
 		if len(args) != 2 {
 			return usageError()
 		}
-		providers, err := service.List()
+		integrations, err := service.List()
 		if err != nil {
 			return err
 		}
-		return printJSON(map[string]any{"providers": providers})
+		return printJSON(map[string]any{"integrations": integrations})
 	case "info":
 		if len(args) != 3 {
 			return usageError()
@@ -84,7 +84,7 @@ func run(args []string) error {
 }
 
 func usageError() error {
-	return fmt.Errorf("usage: groot provider <install|remove|list|info> [target]")
+	return fmt.Errorf("usage: groot integration <install|remove|list|info> [target]")
 }
 
 func printJSON(value any) error {

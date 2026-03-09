@@ -1,6 +1,6 @@
 export type GraphNodeData = {
   label: string;
-  kind: "event" | "subscription" | "connector";
+  kind: "event" | "subscription" | "connection";
 };
 
 export type GraphLayoutNode = {

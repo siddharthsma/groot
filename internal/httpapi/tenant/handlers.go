@@ -14,14 +14,14 @@ import (
 	"groot/internal/agent"
 	"groot/internal/apikey"
 	"groot/internal/connectedapp"
-	"groot/internal/connectorinstance"
-	stripeconnector "groot/internal/connectors/providers/stripe"
+	"groot/internal/connection"
 	"groot/internal/delivery"
 	"groot/internal/event"
 	"groot/internal/functiondestination"
 	"groot/internal/httpapi/common"
 	"groot/internal/inboundroute"
 	"groot/internal/ingest"
+	"groot/internal/integrations/stripe"
 	"groot/internal/replay"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
@@ -208,7 +208,7 @@ func (h *Handlers) createEvent(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Type    string          `json:"type"`
-		Source  string          `json:"source"`
+		Source  json.RawMessage `json:"source"`
 		Payload json.RawMessage `json:"payload"`
 	}
 	if err := common.DecodeJSON(r, &req); err != nil {
@@ -219,10 +219,17 @@ func (h *Handlers) createEvent(w http.ResponseWriter, r *http.Request) {
 		h.state.Metrics.IncEventsReceived()
 	}
 
+	sourceInfo, sourceValue, err := decodeEventSource(req.Source)
+	if err != nil {
+		common.WriteError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	event, err := h.state.EventSvc.Ingest(r.Context(), ingest.Request{
 		TenantID:   tenantID,
 		Type:       req.Type,
-		Source:     req.Source,
+		Source:     sourceValue,
+		SourceInfo: sourceInfo,
 		SourceKind: event.SourceKindExternal,
 		ChainDepth: 0,
 		Payload:    req.Payload,
@@ -242,6 +249,35 @@ func (h *Handlers) createEvent(w http.ResponseWriter, r *http.Request) {
 
 	h.state.Logger.Info("event_received", slog.String("event_id", event.EventID.String()), slog.String("tenant_id", event.TenantID.String()), slog.String("event_type", event.Type))
 	common.WriteJSON(w, http.StatusOK, map[string]string{"event_id": event.EventID.String()})
+}
+
+func decodeEventSource(raw json.RawMessage) (event.Source, string, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return event.Source{}, "", ingest.ErrInvalidSource
+	}
+
+	var sourceValue string
+	if err := json.Unmarshal(raw, &sourceValue); err == nil {
+		sourceValue = strings.TrimSpace(sourceValue)
+		if sourceValue == "" {
+			return event.Source{}, "", ingest.ErrInvalidSource
+		}
+		return event.Source{
+			Kind:        event.SourceKindExternal,
+			Integration: sourceValue,
+		}, sourceValue, nil
+	}
+
+	var sourceInfo event.Source
+	if err := json.Unmarshal(raw, &sourceInfo); err != nil {
+		return event.Source{}, "", ingest.ErrInvalidSource
+	}
+	sourceInfo = event.NormalizeSource(sourceInfo, event.SourceKindExternal)
+	if sourceInfo.Integration == "" {
+		return event.Source{}, "", ingest.ErrInvalidSource
+	}
+	return sourceInfo, sourceInfo.Integration, nil
 }
 
 func (h *Handlers) listEvents(w http.ResponseWriter, r *http.Request) {
@@ -604,7 +640,7 @@ type subscriptionRequest struct {
 	ConnectedAppID         string          `json:"connected_app_id"`
 	DestinationType        string          `json:"destination_type"`
 	FunctionDestinationID  string          `json:"function_destination_id"`
-	ConnectorInstanceID    string          `json:"connector_instance_id"`
+	ConnectionID           string          `json:"connection_id"`
 	AgentID                string          `json:"agent_id"`
 	SessionKeyTemplate     *string         `json:"session_key_template"`
 	SessionCreateIfMissing *bool           `json:"session_create_if_missing"`
@@ -618,7 +654,7 @@ type subscriptionRequest struct {
 }
 
 func (h *Handlers) createOrUpdateSubscription(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, req subscriptionRequest, replace bool) (subscription.Result, error) {
-	appID, functionID, connectorInstanceID, agentID, operation, err := common.ParseSubscriptionRequestFields(req.ConnectedAppID, req.FunctionDestinationID, req.ConnectorInstanceID, req.AgentID, req.Operation)
+	appID, functionID, connectionID, agentID, operation, err := common.ParseSubscriptionRequestFields(req.ConnectedAppID, req.FunctionDestinationID, req.ConnectionID, req.AgentID, req.Operation)
 	if err != nil {
 		return subscription.Result{}, err
 	}
@@ -627,9 +663,9 @@ func (h *Handlers) createOrUpdateSubscription(ctx context.Context, tenantID tena
 		sessionCreateIfMissing = *req.SessionCreateIfMissing
 	}
 	if replace {
-		return h.state.SubSvc.Update(ctx, tenantID, subscriptionID, req.DestinationType, appID, functionID, connectorInstanceID, agentID, req.SessionKeyTemplate, sessionCreateIfMissing, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
+		return h.state.SubSvc.Update(ctx, tenantID, subscriptionID, req.DestinationType, appID, functionID, connectionID, agentID, req.SessionKeyTemplate, sessionCreateIfMissing, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
 	}
-	return h.state.SubSvc.Create(ctx, tenantID, req.DestinationType, appID, functionID, connectorInstanceID, agentID, req.SessionKeyTemplate, sessionCreateIfMissing, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
+	return h.state.SubSvc.Create(ctx, tenantID, req.DestinationType, appID, functionID, connectionID, agentID, req.SessionKeyTemplate, sessionCreateIfMissing, operation, req.OperationParams, req.Filter, req.EventType, req.EventSource, req.EmitSuccessEvent, req.EmitFailureEvent)
 }
 
 func (h *Handlers) handleSubscriptionError(w http.ResponseWriter, tenantID tenant.ID, logMsg string, err error) {
@@ -644,9 +680,9 @@ func (h *Handlers) handleSubscriptionError(w http.ResponseWriter, tenantID tenan
 		common.WriteError(w, http.StatusNotFound, "connected app not found")
 	case errors.Is(err, subscription.ErrFunctionDestinationNotFound):
 		common.WriteError(w, http.StatusNotFound, "function destination not found")
-	case errors.Is(err, subscription.ErrConnectorInstanceNotFound), errors.Is(err, subscription.ErrConnectorInstanceForbidden):
-		common.WriteError(w, http.StatusNotFound, "connector instance not found")
-	case errors.Is(err, subscription.ErrGlobalConnectorNotAllowed):
+	case errors.Is(err, subscription.ErrConnectionNotFound), errors.Is(err, subscription.ErrConnectionForbidden):
+		common.WriteError(w, http.StatusNotFound, "connection not found")
+	case errors.Is(err, subscription.ErrGlobalConnectionNotAllowed):
 		common.WriteError(w, http.StatusBadRequest, err.Error())
 	default:
 		h.state.Logger.Error(logMsg, slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
@@ -666,9 +702,9 @@ func (h *Handlers) handleReplaceSubscriptionError(w http.ResponseWriter, tenantI
 		common.WriteError(w, http.StatusNotFound, "connected app not found")
 	case errors.Is(err, subscription.ErrFunctionDestinationNotFound):
 		common.WriteError(w, http.StatusNotFound, "function destination not found")
-	case errors.Is(err, subscription.ErrConnectorInstanceNotFound), errors.Is(err, subscription.ErrConnectorInstanceForbidden), errors.Is(err, subscription.ErrSubscriptionNotFound):
+	case errors.Is(err, subscription.ErrConnectionNotFound), errors.Is(err, subscription.ErrConnectionForbidden), errors.Is(err, subscription.ErrSubscriptionNotFound):
 		common.WriteError(w, http.StatusNotFound, "subscription not found")
-	case errors.Is(err, subscription.ErrGlobalConnectorNotAllowed):
+	case errors.Is(err, subscription.ErrGlobalConnectionNotAllowed):
 		common.WriteError(w, http.StatusBadRequest, err.Error())
 	default:
 		h.state.Logger.Error("replace subscription", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
@@ -676,18 +712,18 @@ func (h *Handlers) handleReplaceSubscriptionError(w http.ResponseWriter, tenantI
 	}
 }
 
-func (h *Handlers) connectorInstances(w http.ResponseWriter, r *http.Request) {
-	if h.state.ConnectorSvc == nil {
-		common.WriteError(w, http.StatusNotImplemented, "connector instance service unavailable")
+func (h *Handlers) connections(w http.ResponseWriter, r *http.Request) {
+	if h.state.ConnectionSvc == nil {
+		common.WriteError(w, http.StatusNotImplemented, "connection service unavailable")
 		return
 	}
 
 	switch r.Method {
 	case http.MethodPost:
 		var req struct {
-			ConnectorName string          `json:"connector_name"`
-			Scope         string          `json:"scope"`
-			Config        json.RawMessage `json:"config"`
+			IntegrationName string          `json:"integration_name"`
+			Scope           string          `json:"scope"`
+			Config          json.RawMessage `json:"config"`
 		}
 		if err := common.DecodeJSON(r, &req); err != nil {
 			common.WriteError(w, http.StatusBadRequest, err.Error())
@@ -695,7 +731,7 @@ func (h *Handlers) connectorInstances(w http.ResponseWriter, r *http.Request) {
 		}
 		var tenantID *tenant.ID
 		switch strings.TrimSpace(req.Scope) {
-		case "", connectorinstance.ScopeTenant:
+		case "", connection.ScopeTenant:
 			resolvedTenantID, ok := tenantIDFromContext(r.Context())
 			if !ok {
 				authenticated, resolved, authenticatedOK := h.authenticateTenantRequest(r)
@@ -710,30 +746,30 @@ func (h *Handlers) connectorInstances(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			tenantID = &resolvedTenantID
-		case connectorinstance.ScopeGlobal:
+		case connection.ScopeGlobal:
 			if common.BearerToken(r.Header.Get("Authorization")) != h.state.SystemAPIKey {
 				common.WriteError(w, http.StatusUnauthorized, "unauthorized")
 				return
 			}
 		default:
-			common.WriteError(w, http.StatusBadRequest, connectorinstance.ErrInvalidScope.Error())
+			common.WriteError(w, http.StatusBadRequest, connection.ErrInvalidScope.Error())
 			return
 		}
 
-		instance, err := h.state.ConnectorSvc.Create(r.Context(), tenantID, req.ConnectorName, req.Scope, req.Config)
+		instance, err := h.state.ConnectionSvc.Create(r.Context(), tenantID, req.IntegrationName, req.Scope, req.Config)
 		if err != nil {
 			switch {
-			case errors.Is(err, connectorinstance.ErrUnsupportedConnector), errors.Is(err, connectorinstance.ErrInvalidConfig), errors.Is(err, connectorinstance.ErrMissingBotToken), errors.Is(err, connectorinstance.ErrMissingWebhookSecret), errors.Is(err, connectorinstance.ErrMissingStripeAccount), errors.Is(err, connectorinstance.ErrMissingNotionToken), errors.Is(err, connectorinstance.ErrMissingLLMProviders), errors.Is(err, connectorinstance.ErrInvalidLLMProvider), errors.Is(err, connectorinstance.ErrMissingLLMAPIKey), errors.Is(err, connectorinstance.ErrInvalidScope), errors.Is(err, connectorinstance.ErrGlobalNotAllowed), errors.Is(err, connectorinstance.ErrTenantOnlyConnector), errors.Is(err, connectorinstance.ErrGlobalOnlyConnector):
+			case errors.Is(err, connection.ErrUnsupportedConnection), errors.Is(err, connection.ErrInvalidConfig), errors.Is(err, connection.ErrMissingBotToken), errors.Is(err, connection.ErrMissingWebhookSecret), errors.Is(err, connection.ErrMissingStripeAccount), errors.Is(err, connection.ErrMissingNotionToken), errors.Is(err, connection.ErrMissingLLMIntegrations), errors.Is(err, connection.ErrInvalidLLMIntegration), errors.Is(err, connection.ErrMissingLLMAPIKey), errors.Is(err, connection.ErrInvalidScope), errors.Is(err, connection.ErrGlobalNotAllowed), errors.Is(err, connection.ErrTenantOnlyConnection), errors.Is(err, connection.ErrGlobalOnlyConnection):
 				common.WriteError(w, http.StatusBadRequest, err.Error())
-			case errors.Is(err, connectorinstance.ErrDuplicateInstance):
+			case errors.Is(err, connection.ErrDuplicateInstance):
 				common.WriteError(w, http.StatusConflict, err.Error())
 			default:
-				h.state.Logger.Error("create connector instance", slog.String("error", err.Error()))
-				common.WriteError(w, http.StatusInternalServerError, "failed to create connector instance")
+				h.state.Logger.Error("create connection", slog.String("error", err.Error()))
+				common.WriteError(w, http.StatusInternalServerError, "failed to create connection")
 			}
 			return
 		}
-		h.state.Audit("connector_instance.create", "connector_instance", &instance.ID, map[string]any{"connector_name": instance.ConnectorName, "scope": instance.Scope}, r.Context())
+		h.state.Audit("connection.create", "connection", &instance.ID, map[string]any{"integration_name": instance.IntegrationName, "scope": instance.Scope}, r.Context())
 		common.WriteJSON(w, http.StatusOK, map[string]string{"id": instance.ID.String()})
 	case http.MethodGet:
 		tenantID, ok := tenantIDFromContext(r.Context())
@@ -741,10 +777,10 @@ func (h *Handlers) connectorInstances(w http.ResponseWriter, r *http.Request) {
 			common.WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		instances, err := h.state.ConnectorSvc.List(r.Context(), tenantID)
+		instances, err := h.state.ConnectionSvc.List(r.Context(), tenantID)
 		if err != nil {
-			h.state.Logger.Error("list connector instances", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
-			common.WriteError(w, http.StatusInternalServerError, "failed to list connector instances")
+			h.state.Logger.Error("list connections", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
+			common.WriteError(w, http.StatusInternalServerError, "failed to list connections")
 			return
 		}
 		common.WriteJSON(w, http.StatusOK, instances)
@@ -766,30 +802,30 @@ func (h *Handlers) inboundRoutes(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPost:
 		var req struct {
-			ConnectorName       string `json:"connector_name"`
-			RouteKey            string `json:"route_key"`
-			ConnectorInstanceID string `json:"connector_instance_id"`
+			IntegrationName string `json:"integration_name"`
+			RouteKey        string `json:"route_key"`
+			ConnectionID    string `json:"connection_id"`
 		}
 		if err := common.DecodeJSON(r, &req); err != nil {
 			common.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		var connectorInstanceID *uuid.UUID
-		if strings.TrimSpace(req.ConnectorInstanceID) != "" {
-			parsed, err := uuid.Parse(req.ConnectorInstanceID)
+		var connectionID *uuid.UUID
+		if strings.TrimSpace(req.ConnectionID) != "" {
+			parsed, err := uuid.Parse(req.ConnectionID)
 			if err != nil {
-				common.WriteError(w, http.StatusBadRequest, "invalid connector_instance_id")
+				common.WriteError(w, http.StatusBadRequest, "invalid connection_id")
 				return
 			}
-			connectorInstanceID = &parsed
+			connectionID = &parsed
 		}
-		route, err := h.state.InboundRouteSvc.Create(r.Context(), tenantID, req.ConnectorName, req.RouteKey, connectorInstanceID)
+		route, err := h.state.InboundRouteSvc.Create(r.Context(), tenantID, req.IntegrationName, req.RouteKey, connectionID)
 		if err != nil {
 			switch {
-			case errors.Is(err, inboundroute.ErrInvalidConnectorName), errors.Is(err, inboundroute.ErrInvalidRouteKey), errors.Is(err, inboundroute.ErrInvalidConnectorInstance):
+			case errors.Is(err, inboundroute.ErrInvalidIntegrationName), errors.Is(err, inboundroute.ErrInvalidRouteKey), errors.Is(err, inboundroute.ErrInvalidConnection):
 				common.WriteError(w, http.StatusBadRequest, err.Error())
-			case errors.Is(err, inboundroute.ErrConnectorInstanceNotFound):
-				common.WriteError(w, http.StatusNotFound, "connector instance not found")
+			case errors.Is(err, inboundroute.ErrConnectionNotFound):
+				common.WriteError(w, http.StatusNotFound, "connection not found")
 			case errors.Is(err, inboundroute.ErrDuplicateRoute):
 				common.WriteError(w, http.StatusConflict, err.Error())
 			default:
@@ -798,7 +834,7 @@ func (h *Handlers) inboundRoutes(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		h.state.Logger.Info("inbound_route_created", slog.String("tenant_id", tenantID.String()), slog.String("connector_name", route.ConnectorName), slog.String("route_key", route.RouteKey))
+		h.state.Logger.Info("inbound_route_created", slog.String("tenant_id", tenantID.String()), slog.String("integration_name", route.IntegrationName), slog.String("route_key", route.RouteKey))
 		common.WriteJSON(w, http.StatusOK, map[string]string{"id": route.ID.String()})
 	case http.MethodGet:
 		routes, err := h.state.InboundRouteSvc.List(r.Context(), tenantID)
@@ -1207,9 +1243,9 @@ func (h *Handlers) stripeEnable(w http.ResponseWriter, r *http.Request) {
 	instanceID, err := h.state.StripeSvc.Enable(r.Context(), tenantID, req.StripeAccountID, req.WebhookSecret)
 	if err != nil {
 		switch {
-		case errors.Is(err, stripeconnector.ErrInvalidAccountID), errors.Is(err, stripeconnector.ErrInvalidSecret):
+		case errors.Is(err, stripe.ErrInvalidAccountID), errors.Is(err, stripe.ErrInvalidSecret):
 			common.WriteError(w, http.StatusBadRequest, err.Error())
-		case errors.Is(err, stripeconnector.ErrRouteConflict):
+		case errors.Is(err, stripe.ErrRouteConflict):
 			common.WriteError(w, http.StatusConflict, err.Error())
 		default:
 			h.state.Logger.Error("enable stripe connector", slog.String("tenant_id", tenantID.String()), slog.String("error", err.Error()))
@@ -1217,5 +1253,5 @@ func (h *Handlers) stripeEnable(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	common.WriteJSON(w, http.StatusOK, map[string]string{"connector_instance_id": instanceID.String()})
+	common.WriteJSON(w, http.StatusOK, map[string]string{"connection_id": instanceID.String()})
 }

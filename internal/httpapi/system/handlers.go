@@ -44,87 +44,87 @@ func (h *Handlers) systemEdition(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (h *Handlers) listProviders(w http.ResponseWriter, r *http.Request) {
-	if h.state.ProviderCatalogSvc == nil {
-		common.WriteError(w, http.StatusNotImplemented, "provider catalog unavailable")
+func (h *Handlers) listIntegrations(w http.ResponseWriter, r *http.Request) {
+	if h.state.IntegrationCatalogSvc == nil {
+		common.WriteError(w, http.StatusNotImplemented, "integration catalog unavailable")
 		return
 	}
-	records, err := h.state.ProviderCatalogSvc.List(r.Context())
+	records, err := h.state.IntegrationCatalogSvc.List(r.Context())
 	if err != nil {
-		h.state.Logger.Error("list providers", slog.String("error", err.Error()))
-		common.WriteError(w, http.StatusInternalServerError, "failed to list providers")
+		h.state.Logger.Error("list integrations", slog.String("error", err.Error()))
+		common.WriteError(w, http.StatusInternalServerError, "failed to list integrations")
 		return
 	}
 	common.WriteJSON(w, http.StatusOK, records)
 }
 
-func (h *Handlers) getProvider(w http.ResponseWriter, r *http.Request) {
-	if h.state.ProviderCatalogSvc == nil {
-		common.WriteError(w, http.StatusNotImplemented, "provider catalog unavailable")
+func (h *Handlers) getIntegration(w http.ResponseWriter, r *http.Request) {
+	if h.state.IntegrationCatalogSvc == nil {
+		common.WriteError(w, http.StatusNotImplemented, "integration catalog unavailable")
 		return
 	}
-	record, err := h.state.ProviderCatalogSvc.Get(r.Context(), r.PathValue("name"))
+	record, err := h.state.IntegrationCatalogSvc.Get(r.Context(), r.PathValue("name"))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			common.WriteError(w, http.StatusNotFound, "provider not found")
+			common.WriteError(w, http.StatusNotFound, "integration not found")
 			return
 		}
-		h.state.Logger.Error("get provider", slog.String("error", err.Error()))
-		common.WriteError(w, http.StatusInternalServerError, "failed to get provider")
+		h.state.Logger.Error("get integration", slog.String("error", err.Error()))
+		common.WriteError(w, http.StatusInternalServerError, "failed to get integration")
 		return
 	}
 	common.WriteJSON(w, http.StatusOK, record)
 }
 
-func (h *Handlers) listProviderOperations(w http.ResponseWriter, r *http.Request) {
-	if h.state.ProviderCatalogSvc == nil {
-		common.WriteError(w, http.StatusNotImplemented, "provider catalog unavailable")
+func (h *Handlers) listIntegrationOperations(w http.ResponseWriter, r *http.Request) {
+	if h.state.IntegrationCatalogSvc == nil {
+		common.WriteError(w, http.StatusNotImplemented, "integration catalog unavailable")
 		return
 	}
-	records, err := h.state.ProviderCatalogSvc.ListOperations(r.Context(), r.PathValue("name"))
+	records, err := h.state.IntegrationCatalogSvc.ListOperations(r.Context(), r.PathValue("name"))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			common.WriteError(w, http.StatusNotFound, "provider not found")
+			common.WriteError(w, http.StatusNotFound, "integration not found")
 			return
 		}
-		h.state.Logger.Error("list provider operations", slog.String("error", err.Error()))
-		common.WriteError(w, http.StatusInternalServerError, "failed to list provider operations")
+		h.state.Logger.Error("list integration operations", slog.String("error", err.Error()))
+		common.WriteError(w, http.StatusInternalServerError, "failed to list integration operations")
 		return
 	}
 	common.WriteJSON(w, http.StatusOK, records)
 }
 
-func (h *Handlers) listProviderSchemas(w http.ResponseWriter, r *http.Request) {
-	if h.state.ProviderCatalogSvc == nil {
-		common.WriteError(w, http.StatusNotImplemented, "provider catalog unavailable")
+func (h *Handlers) listIntegrationSchemas(w http.ResponseWriter, r *http.Request) {
+	if h.state.IntegrationCatalogSvc == nil {
+		common.WriteError(w, http.StatusNotImplemented, "integration catalog unavailable")
 		return
 	}
-	records, err := h.state.ProviderCatalogSvc.ListSchemas(r.Context(), r.PathValue("name"))
+	records, err := h.state.IntegrationCatalogSvc.ListSchemas(r.Context(), r.PathValue("name"))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			common.WriteError(w, http.StatusNotFound, "provider not found")
+			common.WriteError(w, http.StatusNotFound, "integration not found")
 			return
 		}
-		h.state.Logger.Error("list provider schemas", slog.String("error", err.Error()))
-		common.WriteError(w, http.StatusInternalServerError, "failed to list provider schemas")
+		h.state.Logger.Error("list integration schemas", slog.String("error", err.Error()))
+		common.WriteError(w, http.StatusInternalServerError, "failed to list integration schemas")
 		return
 	}
 	common.WriteJSON(w, http.StatusOK, records)
 }
 
-func (h *Handlers) getProviderConfig(w http.ResponseWriter, r *http.Request) {
-	if h.state.ProviderCatalogSvc == nil {
-		common.WriteError(w, http.StatusNotImplemented, "provider catalog unavailable")
+func (h *Handlers) getIntegrationConfig(w http.ResponseWriter, r *http.Request) {
+	if h.state.IntegrationCatalogSvc == nil {
+		common.WriteError(w, http.StatusNotImplemented, "integration catalog unavailable")
 		return
 	}
-	record, err := h.state.ProviderCatalogSvc.GetConfig(r.Context(), r.PathValue("name"))
+	record, err := h.state.IntegrationCatalogSvc.GetConfig(r.Context(), r.PathValue("name"))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			common.WriteError(w, http.StatusNotFound, "provider not found")
+			common.WriteError(w, http.StatusNotFound, "integration not found")
 			return
 		}
-		h.state.Logger.Error("get provider config", slog.String("error", err.Error()))
-		common.WriteError(w, http.StatusInternalServerError, "failed to get provider config")
+		h.state.Logger.Error("get integration config", slog.String("error", err.Error()))
+		common.WriteError(w, http.StatusInternalServerError, "failed to get integration config")
 		return
 	}
 	common.WriteJSON(w, http.StatusOK, record)

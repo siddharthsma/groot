@@ -94,11 +94,11 @@ This is organized separately on purpose:
 | `ui/components/forms/` | Reusable form scaffolding helpers. | Shared form structure should not be duplicated across routes. |
 | `ui/components/graphs/` | React Flow canvas foundation and Dagre layout helper. | Graph-specific rendering logic is a distinct UI concern. |
 | `ui/components/tables/` | Shared table scaffolding. | Future data-heavy screens need a stable home for reusable table wrappers. |
-| `ui/components/providers/` | Placeholder provider-facing components. | Keeps provider UI separate from generic layout and data primitives. |
+| `ui/components/integrations/` | Placeholder integration-facing components. | Keeps integration UI separate from generic layout and data primitives. |
 | `ui/components/agents/` | Placeholder agent-facing components. | Reserves a canonical home for agent UI. |
 | `ui/components/events/` | Placeholder event-facing components. | Reserves a canonical home for event browser and replay UI. |
 | `ui/lib/api/` | API client foundation and request types. | Network access should be centralized instead of embedded in React components. |
-| `ui/lib/query/` | React Query client creation and provider wiring. | Server-state setup belongs in one narrow shared layer. |
+| `ui/lib/query/` | React Query client creation and integration wiring. | Server-state setup belongs in one narrow shared layer. |
 | `ui/lib/schemas/` | Frontend validation schemas and zod helpers. | Browser-side validation needs a dedicated home. |
 | `ui/lib/theme/` | Theme tokens and frontend visual constants. | Visual constants should not be scattered through components. |
 | `ui/lib/utils.ts` | Shared utility helpers such as `cn()`. | Small cross-cutting helpers stay in one well-known place. |
@@ -225,11 +225,11 @@ Entrypoints live here and nowhere else. This keeps startup wiring separate from 
 | File | What It Contains | Why It Is Here |
 | --- | --- | --- |
 | `cmd/groot-api/main.go` | Thin process entrypoint: create logger/metrics, load config through `internal/app`, bootstrap the assembled application, and run it. | Phase 23 reduced `main.go` so it stays an entrypoint instead of becoming a second orchestration package. |
-| `cmd/groot/main.go` | Phase 30 operator CLI for `provider install`, `provider remove`, `provider list`, and `provider info`. | Provider package lifecycle is operational behavior, but it does not belong inside the API binary entrypoint. |
+| `cmd/groot/main.go` | Phase 30 operator CLI for `integration install`, `integration remove`, `integration list`, and `integration info`. | Integration package lifecycle is operational behavior, but it does not belong inside the API binary entrypoint. |
 
 ## `internal/`
 
-Everything under `internal/` is application logic. Packages are split by responsibility so handlers do not absorb business logic, storage stays isolated, and connectors/Temporal/router code remain independently testable.
+Everything under `internal/` is application logic. Packages are split by responsibility so handlers do not absorb business logic, storage stays isolated, and integrations/Temporal/router code remain independently testable.
 
 ### `internal/admin/`
 
@@ -260,7 +260,7 @@ This package family owns tenant-defined agents, agent sessions, tool bindings, a
 
 | File | What It Contains | Why It Is Here |
 | --- | --- | --- |
-| `internal/agent/execution.go` | Executes agent-requested tools through Groot-controlled connector/function execution paths. | Tool execution is part of agent orchestration, not generic HTTP or Temporal wiring. |
+| `internal/agent/execution.go` | Executes agent-requested tools through Groot-controlled integration/function execution paths. | Tool execution is part of agent orchestration, not generic HTTP or Temporal wiring. |
 | `internal/agent/model.go` | Shared agent structs: agents, sessions, runs, steps, tool bindings, and session-event records. | Common types keep the rest of the system from re-defining agent models. |
 | `internal/agent/service.go` | CRUD for agent definitions and session lifecycle operations such as list/get/close behavior. | The agent domain needs its own service layer. |
 | `internal/agent/session.go` | Session-key template resolution against canonical event payloads. | Session key logic is specific to agents and should stay local to that domain. |
@@ -313,15 +313,15 @@ All env loading lives here so config rules stay centralized.
 
 | File | What It Contains |
 | --- | --- |
-| `internal/config/config.go` | Full env loader for infrastructure, auth, admin, schemas, replay, graph, connectors, agents, edition, and license config. |
+| `internal/config/config.go` | Full env loader for infrastructure, auth, admin, schemas, replay, graph, integrations, agents, edition, and license config. |
 | `internal/config/config_test.go` | Config loading and validation tests. |
 
 ### `internal/connectedapp/`
 
 This is now a legacy-but-supported abstraction. In current Groot terminology:
 
-- a connector is a provider implementation such as Slack, Stripe, Notion, Resend, or LLM
-- a connector instance is a configured tenant/global runtime integration
+- a connection is a integration implementation such as Slack, Stripe, Notion, Resend, or LLM
+- a connection is a configured tenant/global runtime integration
 - a connected app is the older/simple outbound destination abstraction retained for the webhook-style `/connected-apps` API
 
 Phase 25 keeps `connectedapp` in place rather than forcing a broad rename because the external `/connected-apps` API is still part of the product surface.
@@ -331,165 +331,171 @@ Phase 25 keeps `connectedapp` in place rather than forcing a broad rename becaus
 | `internal/connectedapp/service.go` | CRUD and validation for simple connected apps/webhook destinations. |
 | `internal/connectedapp/service_test.go` | Connected app service tests. |
 
-### `internal/connectorinstance/`
+### `internal/connection/`
 
-Connector instances are modeled separately because they represent reusable configured integrations rather than one-off subscriptions.
+Connection instances are modeled separately because they represent reusable configured integrations rather than one-off subscriptions.
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectorinstance/service.go` | CRUD and admin upsert logic for connector instances, including scope, tenant ownership, provider-specific validation, and secret redaction policy. |
-| `internal/connectorinstance/service_test.go` | Connector instance tests. |
+| `internal/connection/service.go` | CRUD and admin upsert logic for connections, including scope, tenant ownership, integration-specific validation, and secret redaction policy. |
+| `internal/connection/service_test.go` | Connection instance tests. |
 
 ### `internal/connectors/`
 
-Connector-specific integrations are grouped under one tree, with a provider framework layered on top so every built-in integration registers the same way, exposes a machine-readable spec, and declares its owned schemas from one canonical location.
+This package is now intentionally small. It holds only the narrow shared helpers that are still used across the integration runtime.
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/connector.go` | Shared connector interface/types for inbound connector orchestration. |
-| `internal/connectors/outbound/runtime.go` | Shared outbound execution result metadata and retry/permanent error types used by provider implementations and delivery workflows. |
-| `internal/connectors/pluginloader/loader.go` | Phase 29 plugin loader: scan the configured directory, open `.so` files, resolve the exported `Provider` symbol, validate specs, register plugins, and register plugin-owned schemas. |
-| `internal/connectors/pluginloader/scan.go` | Filesystem scanning for provider plugin directories. |
-| `internal/connectors/pluginloader/validate.go` | Plugin-specific validation rules layered on top of provider-spec validation. |
-| `internal/connectors/pluginloader/loader_supported.go` | Go `plugin`-based loader implementation for platforms where plugins are supported. |
-| `internal/connectors/pluginloader/loader_unsupported.go` | Explicit unsupported-platform behavior for plugin loading. |
-| `internal/connectors/pluginloader/loader_supported_test.go` | Plugin loader tests on supported platforms. |
-| `internal/connectors/pluginloader/scan_test.go` | Plugin directory scanning tests. |
+| `internal/connectors/connector.go` | Shared inbound-connector interface used by the Resend and Stripe orchestration services. |
+| `internal/connectors/outbound/runtime.go` | Shared outbound execution result metadata and retry/permanent error types used by integration implementations and delivery workflows. |
 
-#### `internal/connectors/provider/`
+#### `internal/integrations/`
+
+This is the canonical integration tree. It owns the registry, catalog, plugin loading, package installation, shared integration spec/types, and every built-in integration.
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/provider/provider_spec.go` | Canonical provider spec and provider execution interfaces. |
-| `internal/connectors/provider/helpers.go` | Shared config decode/rewrite helpers used by provider validators. |
-| `internal/connectors/provider/schema_helpers.go` | Shared JSON Schema builders for provider-owned schema declarations. |
-| `internal/connectors/provider/testsuite/conformance.go` | Package-local provider conformance harness used by every built-in provider test. |
+| `internal/integrations/provider_spec.go` | Canonical integration spec and execution interfaces. |
+| `internal/integrations/helpers.go` | Shared config decode/rewrite helpers used by integration validators. |
+| `internal/integrations/schema_helpers.go` | Shared JSON Schema builders for integration-owned schema declarations. |
+| `internal/integrations/testsuite/conformance.go` | Package-local integration conformance harness used by built-in integration tests. |
+| `internal/integrations/builtin/builtin.go` | Single blank-import entrypoint that deterministically registers all built-in integrations at startup. |
 
-#### `internal/connectors/registry/`
-
-| File | What It Contains |
-| --- | --- |
-| `internal/connectors/registry/registry.go` | Central provider registry, duplicate-name protection, and provider-spec-to-schema-bundle conversion. |
-
-#### `internal/connectors/installer/`
+##### `internal/integrations/registry/`
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/installer/config.go` | Reads provider-package installer paths and registry settings from environment-compatible defaults. |
-| `internal/connectors/installer/download.go` | Package download helper for registry-based installs. |
-| `internal/connectors/installer/extract.go` | `.grootpkg` tar extraction and archive layout validation. |
-| `internal/connectors/installer/installer.go` | Main Phase 30 install/remove/list/info service, including package verification, cache write, plugin extraction, and installed metadata updates. |
-| `internal/connectors/installer/metadata.go` | Read/write helpers for `providers/installed.json`. |
-| `internal/connectors/installer/types.go` | Manifest, trusted key, installed metadata, and registry index types. |
-| `internal/connectors/installer/verify.go` | Signature, checksum, manifest, OS/arch, Groot-version, and provider-spec-hash verification. |
-| `internal/connectors/installer/version.go` | Minimal semver parsing and constraint checks used by Phase 30 package compatibility logic. |
+| `internal/integrations/registry/registry.go` | Central integration registry, duplicate-name protection, and integration-spec registration. |
 
-#### `internal/connectors/registryclient/`
+##### `internal/integrations/catalog/`
+
+This package turns the compiled integration registry into a stable discovery surface for HTTP introspection, startup validation, and generated integration docs.
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/registryclient/client.go` | Optional remote registry index fetch and provider lookup for `groot provider install <name>`. |
+| `internal/integrations/catalog/catalog.go` | Registry-to-catalog adapters and integration summary/detail assembly helpers. |
+| `internal/integrations/catalog/service.go` | Integration catalog service used by startup validation and unauthenticated `/integrations` endpoints. |
+| `internal/integrations/catalog/types.go` | Stable integration catalog response shapes for integrations, operations, schemas, and config fields. |
+| `internal/integrations/catalog/catalog_test.go` | Catalog tests, including integration-schema mismatch and missing-schema coverage. |
 
-#### `internal/connectors/catalog/`
-
-This package turns the compiled provider registry into a stable discovery surface for HTTP introspection, startup validation, and generated provider docs.
-
-| File | What It Contains |
-| --- | --- |
-| `internal/connectors/catalog/catalog.go` | Registry-to-catalog adapters and provider summary/detail assembly helpers. |
-| `internal/connectors/catalog/service.go` | Provider catalog service used by startup validation and unauthenticated `/providers` endpoints. |
-| `internal/connectors/catalog/types.go` | Stable provider catalog response shapes for providers, operations, schemas, and config fields. |
-| `internal/connectors/catalog/catalog_test.go` | Catalog tests, including provider-schema mismatch and missing-schema coverage. |
-
-##### `internal/connectors/catalog/docgen/`
+###### `internal/integrations/catalog/docgen/`
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/catalog/docgen/generator.go` | Small generator binary that writes committed provider reference docs into `docs/providers/generated/` from live registry metadata. |
+| `internal/integrations/catalog/docgen/generator.go` | Small generator binary that writes committed integration reference docs into `docs/integrations/generated/` from live registry metadata. |
 
-#### `internal/connectors/providers/`
-
-| File | What It Contains |
-| --- | --- |
-| `internal/connectors/providers/builtin/builtin.go` | Single blank-import entrypoint that deterministically registers all built-in providers at startup. |
-
-##### `internal/connectors/providers/slack/`
+##### `internal/integrations/pluginloader/`
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/providers/slack/provider.go` | Slack provider spec, registry registration, and execution entrypoint. |
-| `internal/connectors/providers/slack/config.go` | Slack provider config and outbound param shapes. |
-| `internal/connectors/providers/slack/inbound.go` | Slack Events API verification, challenge handling, route resolution, and event normalization. |
-| `internal/connectors/providers/slack/operations.go` | Slack outbound actions such as `post_message` and `create_thread_reply`. |
-| `internal/connectors/providers/slack/schemas.go` | Slack-owned inbound and result-event schema declarations. |
-| `internal/connectors/providers/slack/validate.go` | Slack connector-instance config validation and normalization. |
-| `internal/connectors/providers/slack/provider_test.go` | Shared provider conformance test for Slack. |
-| `internal/connectors/providers/slack/inbound_test.go` | Slack inbound behavior tests. |
-| `internal/connectors/providers/slack/operations_test.go` | Slack outbound behavior tests. |
-| `internal/connectors/providers/slack/README.md` | Provider-local operational reference. |
+| `internal/integrations/pluginloader/loader.go` | Phase 29 plugin loader: scan the configured directory, open `.so` files, resolve the exported `Integration` symbol, validate specs, register plugins, and register plugin-owned schemas. |
+| `internal/integrations/pluginloader/scan.go` | Filesystem scanning for integration plugin directories. |
+| `internal/integrations/pluginloader/validate.go` | Plugin-specific validation rules layered on top of integration-spec validation. |
+| `internal/integrations/pluginloader/loader_supported.go` | Go `plugin`-based loader implementation for platforms where plugins are supported. |
+| `internal/integrations/pluginloader/loader_unsupported.go` | Explicit unsupported-platform behavior for plugin loading. |
+| `internal/integrations/pluginloader/loader_supported_test.go` | Plugin loader tests on supported platforms. |
+| `internal/integrations/pluginloader/scan_test.go` | Plugin directory scanning tests. |
 
-##### `internal/connectors/providers/stripe/`
+##### `internal/integrations/installer/`
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/providers/stripe/provider.go` | Stripe provider spec and registration. |
-| `internal/connectors/providers/stripe/config.go` | Stripe inbound payload shape definitions. |
-| `internal/connectors/providers/stripe/inbound.go` | Stripe enablement, signature verification, account routing, and event ingestion. |
-| `internal/connectors/providers/stripe/operations.go` | Explicit outbound no-op placeholder because Stripe is inbound-only today. |
-| `internal/connectors/providers/stripe/schemas.go` | Stripe-owned external event schema declarations. |
-| `internal/connectors/providers/stripe/validate.go` | Stripe connector-instance config validation and normalization. |
-| `internal/connectors/providers/stripe/provider_test.go` | Shared provider conformance test for Stripe. |
-| `internal/connectors/providers/stripe/inbound_test.go` | Stripe inbound behavior tests. |
-| `internal/connectors/providers/stripe/README.md` | Provider-local operational reference. |
+| `internal/integrations/installer/config.go` | Reads integration-package installer paths and registry settings from environment-compatible defaults. |
+| `internal/integrations/installer/download.go` | Package download helper for registry-based installs. |
+| `internal/integrations/installer/extract.go` | `.grootpkg` tar extraction and archive layout validation. |
+| `internal/integrations/installer/installer.go` | Main Phase 30 install/remove/list/info service, including package verification, cache write, plugin extraction, and installed metadata updates. |
+| `internal/integrations/installer/metadata.go` | Read/write helpers for `integrations/installed.json`. |
+| `internal/integrations/installer/types.go` | Manifest, trusted key, installed metadata, and registry index types. |
+| `internal/integrations/installer/verify.go` | Signature, checksum, manifest, OS/arch, Groot-version, and integration-spec-hash verification. |
+| `internal/integrations/installer/version.go` | Minimal semver parsing and constraint checks used by Phase 30 package compatibility logic. |
 
-##### `internal/connectors/providers/notion/`
-
-| File | What It Contains |
-| --- | --- |
-| `internal/connectors/providers/notion/provider.go` | Notion provider spec, registry registration, and execution entrypoint. |
-| `internal/connectors/providers/notion/config.go` | Notion outbound request shapes. |
-| `internal/connectors/providers/notion/operations.go` | Notion outbound actions such as page creation and block append. |
-| `internal/connectors/providers/notion/schemas.go` | Notion result-event schema declarations. |
-| `internal/connectors/providers/notion/validate.go` | Notion connector-instance config validation and normalization. |
-| `internal/connectors/providers/notion/provider_test.go` | Shared provider conformance test for Notion. |
-| `internal/connectors/providers/notion/operations_test.go` | Notion outbound behavior tests. |
-| `internal/connectors/providers/notion/README.md` | Provider-local operational reference. |
-
-##### `internal/connectors/providers/resend/`
+##### `internal/integrations/registryclient/`
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/providers/resend/provider.go` | Resend provider spec, registry registration, and execution entrypoint. |
-| `internal/connectors/providers/resend/config.go` | Resend outbound request shapes. |
-| `internal/connectors/providers/resend/service.go` | Higher-level Resend bootstrap, tenant enablement, route creation, and webhook handling. |
-| `internal/connectors/providers/resend/operations.go` | Resend outbound `send_email` execution. |
-| `internal/connectors/providers/resend/schemas.go` | Resend inbound and result-event schema declarations. |
-| `internal/connectors/providers/resend/validate.go` | Resend connector-instance validation. |
-| `internal/connectors/providers/resend/provider_test.go` | Shared provider conformance test for Resend. |
-| `internal/connectors/providers/resend/service_test.go` | Resend orchestration tests. |
-| `internal/connectors/providers/resend/operations_test.go` | Resend outbound behavior tests. |
-| `internal/connectors/providers/resend/README.md` | Provider-local operational reference. |
-
-##### `internal/connectors/providers/llm/`
+| `internal/integrations/registryclient/client.go` | Optional remote registry index fetch and integration lookup for `groot integration install <name>`. |
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/providers/llm/provider.go` | LLM provider spec, registry registration, and execution entrypoint. |
-| `internal/connectors/providers/llm/config.go` | LLM operation parameter shapes. |
-| `internal/connectors/providers/llm/operations.go` | The LLM provider supporting `generate`, `summarize`, `classify`, `extract`, and agent execution helpers. |
-| `internal/connectors/providers/llm/schemas.go` | LLM result-event schema declarations. |
-| `internal/connectors/providers/llm/validate.go` | LLM connector-instance config validation and normalization. |
-| `internal/connectors/providers/llm/provider_test.go` | Shared provider conformance test for the LLM provider. |
-| `internal/connectors/providers/llm/operations_test.go` | LLM behavior tests. |
-| `internal/connectors/providers/llm/README.md` | Provider-local operational reference. |
+| `internal/integrations/builtin/builtin.go` | Single blank-import entrypoint that deterministically registers all built-in integrations at startup. |
 
-###### `internal/connectors/providers/llm/providers/`
+##### `internal/integrations/slack/`
 
 | File | What It Contains |
 | --- | --- |
-| `internal/connectors/providers/llm/providers/providers.go` | Shared sub-provider interface used by OpenAI and Anthropic implementations. |
-| `internal/connectors/providers/llm/providers/anthropic/provider.go` | Anthropic API integration. |
-| `internal/connectors/providers/llm/providers/openai/provider.go` | OpenAI API integration. |
+| `internal/integrations/slack/integration.go` | Slack integration spec, registry registration, and execution entrypoint. |
+| `internal/integrations/slack/config.go` | Slack integration config and outbound param shapes. |
+| `internal/integrations/slack/inbound.go` | Slack Events API verification, challenge handling, route resolution, and event normalization. |
+| `internal/integrations/slack/operations.go` | Slack outbound actions such as `post_message` and `create_thread_reply`. |
+| `internal/integrations/slack/schemas.go` | Slack-owned inbound and result-event schema declarations. |
+| `internal/integrations/slack/validate.go` | Slack connection config validation and normalization. |
+| `internal/integrations/slack/provider_test.go` | Shared integration conformance test for Slack. |
+| `internal/integrations/slack/inbound_test.go` | Slack inbound behavior tests. |
+| `internal/integrations/slack/operations_test.go` | Slack outbound behavior tests. |
+| `internal/integrations/slack/README.md` | Integration-local operational reference. |
+
+##### `internal/integrations/stripe/`
+
+| File | What It Contains |
+| --- | --- |
+| `internal/integrations/stripe/provider.go` | Stripe integration spec and registration. |
+| `internal/integrations/stripe/config.go` | Stripe inbound payload shape definitions. |
+| `internal/integrations/stripe/inbound.go` | Stripe enablement, signature verification, account routing, and event ingestion. |
+| `internal/integrations/stripe/operations.go` | Explicit outbound no-op placeholder because Stripe is inbound-only today. |
+| `internal/integrations/stripe/schemas.go` | Stripe-owned external event schema declarations. |
+| `internal/integrations/stripe/validate.go` | Stripe connection config validation and normalization. |
+| `internal/integrations/stripe/provider_test.go` | Shared integration conformance test for Stripe. |
+| `internal/integrations/stripe/inbound_test.go` | Stripe inbound behavior tests. |
+| `internal/integrations/stripe/README.md` | Integration-local operational reference. |
+
+##### `internal/integrations/notion/`
+
+| File | What It Contains |
+| --- | --- |
+| `internal/integrations/notion/provider.go` | Notion integration spec, registry registration, and execution entrypoint. |
+| `internal/integrations/notion/config.go` | Notion outbound request shapes. |
+| `internal/integrations/notion/operations.go` | Notion outbound actions such as page creation and block append. |
+| `internal/integrations/notion/schemas.go` | Notion result-event schema declarations. |
+| `internal/integrations/notion/validate.go` | Notion connection config validation and normalization. |
+| `internal/integrations/notion/provider_test.go` | Shared integration conformance test for Notion. |
+| `internal/integrations/notion/operations_test.go` | Notion outbound behavior tests. |
+| `internal/integrations/notion/README.md` | Integration-local operational reference. |
+
+##### `internal/integrations/resend/`
+
+| File | What It Contains |
+| --- | --- |
+| `internal/integrations/resend/provider.go` | Resend integration spec, registry registration, and execution entrypoint. |
+| `internal/integrations/resend/config.go` | Resend outbound request shapes. |
+| `internal/integrations/resend/service.go` | Higher-level Resend bootstrap, tenant enablement, route creation, and webhook handling. |
+| `internal/integrations/resend/operations.go` | Resend outbound `send_email` execution. |
+| `internal/integrations/resend/schemas.go` | Resend inbound and result-event schema declarations. |
+| `internal/integrations/resend/validate.go` | Resend connection validation. |
+| `internal/integrations/resend/provider_test.go` | Shared integration conformance test for Resend. |
+| `internal/integrations/resend/service_test.go` | Resend orchestration tests. |
+| `internal/integrations/resend/operations_test.go` | Resend outbound behavior tests. |
+| `internal/integrations/resend/README.md` | Integration-local operational reference. |
+
+##### `internal/integrations/llm/`
+
+| File | What It Contains |
+| --- | --- |
+| `internal/integrations/llm/provider.go` | LLM integration spec, registry registration, and execution entrypoint. |
+| `internal/integrations/llm/config.go` | LLM operation parameter shapes. |
+| `internal/integrations/llm/operations.go` | The LLM integration supporting `generate`, `summarize`, `classify`, `extract`, and agent execution helpers. |
+| `internal/integrations/llm/schemas.go` | LLM result-event schema declarations. |
+| `internal/integrations/llm/validate.go` | LLM connection config validation and normalization. |
+| `internal/integrations/llm/provider_test.go` | Shared integration conformance test for the LLM integration. |
+| `internal/integrations/llm/operations_test.go` | LLM behavior tests. |
+| `internal/integrations/llm/README.md` | Integration-local operational reference. |
+
+###### `internal/integrations/llm/clients/`
+
+| File | What It Contains |
+| --- | --- |
+| `internal/integrations/llm/clients/providers.go` | Shared client interface used by OpenAI and Anthropic implementations. |
+| `internal/integrations/llm/clients/anthropic/provider.go` | Anthropic API client. |
+| `internal/integrations/llm/clients/openai/provider.go` | OpenAI API client. |
 
 ### `internal/delivery/`
 
@@ -514,14 +520,15 @@ Edition logic is isolated because it affects startup, capabilities, routes, lice
 
 ### `internal/event/`
 
-This is the canonical home for event-domain code. It owns the canonical event model, event JSON envelope helpers, result-event emission, and tenant/admin event query logic.
+This is the canonical home for event-domain code. It owns the canonical event model, structured source and lineage handling, event JSON envelope helpers, result-event emission, and tenant/admin event query logic.
 
 | File | What It Contains |
 | --- | --- |
-| `internal/event/emitter.go` | Canonical result-event emitter used by delivery workflows to publish completed/failed internal events and link them back to delivery jobs. |
+| `internal/event/emitter.go` | Canonical result-event emitter used by delivery workflows to publish completed/failed internal events, preserve external connection lineage, and link emitted events back to delivery jobs. |
 | `internal/event/envelope.go` | JSON marshal/unmarshal helpers for the canonical event envelope. |
-| `internal/event/model.go` | Canonical event struct and source-kind constants. |
+| `internal/event/model.go` | Canonical event struct, structured `source`, optional `lineage`, and source-kind helpers. |
 | `internal/event/query.go` | Tenant/admin event listing and inspection service plus the exported event-list response shapes used by HTTP. |
+| `internal/event/template.go` | Shared template-token builder for `event_id`, `source.*`, `lineage.*`, and `payload.*` placeholders. |
 | `internal/event/emitter_test.go` | Result-emitter tests. |
 | `internal/event/model_test.go` | Canonical event model JSON tests. |
 
@@ -565,7 +572,7 @@ This package owns HTTP only, but it is now split by API surface so tenant APIs, 
 
 | File | What It Contains |
 | --- | --- |
-| `internal/httpapi/tenant/handlers.go` | Tenant-facing handlers for tenants, events, API keys, subscriptions, connector instances, inbound routes, deliveries, functions, and agents. |
+| `internal/httpapi/tenant/handlers.go` | Tenant-facing handlers for tenants, events, API keys, subscriptions, connections, inbound routes, deliveries, functions, and agents. |
 | `internal/httpapi/tenant/middleware.go` | Tenant auth middleware and tenant principal extraction helpers. |
 | `internal/httpapi/tenant/routes.go` | Tenant route registration. |
 
@@ -573,7 +580,7 @@ This package owns HTTP only, but it is now split by API surface so tenant APIs, 
 
 | File | What It Contains |
 | --- | --- |
-| `internal/httpapi/admin/handlers.go` | `/admin` handlers for tenant management, API keys, connector upsert, subscriptions, event/delivery queries, replay, topology, and execution graphs. |
+| `internal/httpapi/admin/handlers.go` | `/admin` handlers for tenant management, API keys, connection upsert, subscriptions, event/delivery queries, replay, topology, and execution graphs. |
 | `internal/httpapi/admin/middleware.go` | Admin auth and rate-limit middleware. |
 | `internal/httpapi/admin/routes.go` | Admin route registration gated by admin mode. |
 
@@ -590,7 +597,7 @@ This package owns HTTP only, but it is now split by API surface so tenant APIs, 
 
 | File | What It Contains |
 | --- | --- |
-| `internal/httpapi/system/handlers.go` | Health/readiness, metrics, edition diagnostics, provider catalog, schema catalog, and system bootstrap/list handlers. |
+| `internal/httpapi/system/handlers.go` | Health/readiness, metrics, edition diagnostics, integration catalog, schema catalog, and system bootstrap/list handlers. |
 | `internal/httpapi/system/middleware.go` | System API key middleware for system-only routes. |
 | `internal/httpapi/system/routes.go` | System route registration. |
 
@@ -609,7 +616,7 @@ This package owns HTTP only, but it is now split by API surface so tenant APIs, 
 
 ### `internal/ingest/`
 
-This package owns canonical event creation so handlers and connectors do not each invent their own event normalization flow.
+This package owns canonical event creation so handlers and integrations do not each invent their own event normalization flow.
 
 | File | What It Contains |
 | --- | --- |
@@ -660,11 +667,11 @@ All PostgreSQL access goes through this package so SQL does not leak into handle
 
 | File | What It Contains |
 | --- | --- |
-| `internal/storage/admin.go` | Cross-tenant admin read/query helpers for connector instances, subscriptions, events, and delivery jobs. |
+| `internal/storage/admin.go` | Cross-tenant admin read/query helpers for connections, subscriptions, events, and delivery jobs. |
 | `internal/storage/agents.go` | Persistence for agents, agent sessions, session events, agent runs, and agent steps. |
 | `internal/storage/audit.go` | Audit-event writes. |
 | `internal/storage/auth.go` | Persistence for real API keys and legacy-key lookup helpers such as prefix lookup and `last_used_at` updates. |
-| `internal/storage/connectors.go` | Connector instance persistence plus legacy connected-app persistence helpers. |
+| `internal/storage/connectors.go` | Connection persistence plus legacy connected-app persistence helpers. |
 | `internal/storage/db.go` | Shared Postgres bootstrap, `DB` construction, close/health helpers, scan helpers, and shared SQL utilities. |
 | `internal/storage/deliveries.go` | Delivery-job persistence, polling/claim SQL, retry/dead-letter updates, result-event linking, and delivery inspection queries. |
 | `internal/storage/events.go` | Canonical event inserts, tenant/event lookups, and event query helpers used by replay and inspection flows. |
@@ -720,7 +727,7 @@ Temporal-specific code is isolated here so the rest of the system interacts with
 | File | What It Contains |
 | --- | --- |
 | `internal/temporal/workflows/agent.go` | Agent workflow that manages run lifecycle, session resolution, runtime execution, and final result handling. |
-| `internal/temporal/workflows/delivery.go` | Main delivery workflow for webhook/function/connector delivery and agent child workflow branching. |
+| `internal/temporal/workflows/delivery.go` | Main delivery workflow for webhook/function/connection delivery and agent child workflow branching. |
 
 ### `internal/tenant/`
 
@@ -743,9 +750,9 @@ Migrations are kept as simple numbered SQL files so schema history is explicit a
 | `migrations/003_delivery_job_updates.sql` | Delivery job attempt/error/completion fields and event persistence support. |
 | `migrations/004_operability.sql` | Operability/query support fields and indexes. |
 | `migrations/005_function_destinations.sql` | Function destinations. |
-| `migrations/006_resend_connector.sql` | Resend connector tables and settings. |
-| `migrations/007_outbound_connectors.sql` | Outbound connector subscription modeling. |
-| `migrations/008_connector_scope_and_routing.sql` | Connector scope and generalized inbound routing. |
+| `migrations/006_resend_connector.sql` | Resend connection tables and settings. |
+| `migrations/007_outbound_connectors.sql` | Outbound connection subscription modeling. |
+| `migrations/008_connector_scope_and_routing.sql` | Connection scope and generalized inbound routing. |
 | `migrations/009_event_replay.sql` | Replay-related delivery changes. |
 | `migrations/010_phase12_result_events.sql` | Result-event linkage and internal event-chain fields. |
 | `migrations/014_event_schemas.sql` | Event schema registry. |
@@ -754,6 +761,7 @@ Migrations are kept as simple numbered SQL files so schema history is explicit a
 | `migrations/017_auth_and_audit.sql` | API keys, audit events, and actor metadata columns. |
 | `migrations/018_phase20_checkpoint_fixes.sql` | Operational fixes discovered during the Phase 20 checkpoint. |
 | `migrations/021_agent_sessions.sql` | Agents, agent sessions, session-event links, and subscription/run agent references. |
+| `migrations/022_phase33_connection_aware_events.sql` | Structured event source and lineage columns plus indexes for querying source and origin connections. |
 
 ## `tests/`
 
@@ -763,7 +771,7 @@ Integration tests live outside `internal/` because they exercise the system as a
 
 | File | What It Contains |
 | --- | --- |
-| `tests/helpers/harness.go` | The integration harness: DB reset, binary build, API startup, env injection, and request helpers. |
+| `tests/helpers/harness.go` | The integration harness: DB reset, binary build, API startup, env injection, request helpers, and direct event lookup that exposes stored `source` and `lineage` metadata for assertions. |
 | `tests/helpers/mocks.go` | Mock services for Slack, Notion, Resend, LLMs, JWKS, and function/webhook sinks. |
 | `tests/helpers/report.go` | Helpers for writing checkpoint audit reports. |
 
@@ -776,7 +784,8 @@ Integration tests live outside `internal/` because they exercise the system as a
 | `tests/integration/common_test.go` | Shared integration helpers such as auth headers, JSON requests, and signed-license generation. |
 | `tests/integration/phase21_agent_sessions_test.go` | Agent session reuse and lifecycle integration coverage. |
 | `tests/integration/phase22_editions_test.go` | Edition/build/license/community integration coverage. |
-| `tests/integration/phase28_provider_catalog_test.go` | Live provider-catalog coverage for `/providers`, provider detail, operations, schemas, and config responses. |
+| `tests/integration/phase28_integration_catalog_test.go` | Live integration-catalog coverage for `/integrations`, integration detail, operations, schemas, and config responses. |
+| `tests/integration/phase33_connection_source_test.go` | Connection-aware event coverage for structured sources, source-based filters, lineage preservation, replay preservation, and same-integration default routing. |
 | `tests/integration/reset_test.go` | Deterministic reset and migration replay checks. |
 | `tests/integration/scenario_email_triage_test.go` | Golden inbound-email triage scenario. |
 | `tests/integration/scenario_replay_graph_test.go` | Golden replay and graph-inspection scenario. |
@@ -797,11 +806,11 @@ The docs directory mixes phase specs and reference material. The phase docs are 
 | `docs/phase4.md` | Phase 4 operability and delivery-management spec. |
 | `docs/phase5.md` | Phase 5 function-destination spec. |
 | `docs/phase6.md` | Phase 6 Resend spec. |
-| `docs/phase7.md` | Phase 7 outbound Slack connector spec. |
-| `docs/phase8.md` | Phase 8 connector scope and inbound routing spec. |
+| `docs/phase7.md` | Phase 7 outbound Slack connection spec. |
+| `docs/phase8.md` | Phase 8 connection scope and inbound routing spec. |
 | `docs/phase9.md` | Phase 9 replay and retry spec. |
 | `docs/phase10.md` | Phase 10 Stripe inbound and Notion outbound spec. |
-| `docs/phase11.md` | Phase 11 LLM connector spec. |
+| `docs/phase11.md` | Phase 11 LLM connection spec. |
 | `docs/phase12.md` | Phase 12 result-event chaining spec. |
 | `docs/phase13.md` | Phase 13 Slack inbound and additional chaining spec. |
 | `docs/phase14.md` | Phase 14 event schema system spec. |
@@ -814,7 +823,7 @@ The docs directory mixes phase specs and reference material. The phase docs are 
 | `docs/phase21.md` | Phase 21 external agent runtime spec. |
 | `docs/phase22.md` | Phase 22 edition/community packaging spec. |
 | `docs/phase22_addendum.md` | Phase 22 addendum for build-time edition locking and signed licenses. |
-| `docs/providers/generated/*.md` | Committed provider reference pages generated from the live provider registry. |
+| `docs/integrations/generated/*.md` | Committed integration reference pages generated from the live integration registry. |
 
 ## `build/`
 
@@ -852,7 +861,7 @@ Deployment packaging is separate from `build/` because deployment bundles contai
 
 | File | What It Contains |
 | --- | --- |
-| `deploy/docker-compose/community/.env.example` | Compose-specific env template for the Community bundle, including ports, bootstrap tenant name, provider secrets, and runtime shared secret. |
+| `deploy/docker-compose/community/.env.example` | Compose-specific env template for the Community bundle, including ports, bootstrap tenant name, integration secrets, and runtime shared secret. |
 | `deploy/docker-compose/community/README.md` | Quickstart for the Community Docker Compose bundle and explanation of the included runtime stub. |
 | `deploy/docker-compose/community/docker-compose.yml` | Community Edition deployment stack. Unlike the root compose file, it pins Community env, adds the agent runtime stub, and is aimed at packaged self-hosting rather than developer-only local work. |
 
@@ -882,9 +891,9 @@ Example code lives here when it is useful for operators or extension authors and
 
 | File | What It Contains |
 | --- | --- |
-| `examples/provider-plugin/go.mod` | Separate example module for building an external provider plugin. |
-| `examples/provider-plugin/provider.go` | The `example_echo_provider` plugin used to demonstrate the Phase 29 plugin contract. |
-| `examples/provider-plugin/README.md` | How to build and load the example plugin. |
+| `examples/integration-plugin/go.mod` | Separate example module for building an external integration plugin. |
+| `examples/integration-plugin/integration.go` | The `example_echo_integration` plugin used to demonstrate the Phase 29 plugin contract. |
+| `examples/integration-plugin/README.md` | How to build and load the example plugin. |
 
 ### `sdk/`
 
@@ -892,10 +901,10 @@ The SDK is intentionally separate from `internal/` so external plugin repos can 
 
 | File | What It Contains |
 | --- | --- |
-| `sdk/go.mod` | Separate Go module root for the provider-plugin SDK. |
-| `sdk/provider/provider.go` | Public provider interface and provider-spec types for external plugins. |
-| `sdk/provider/helpers.go` | Public config decode, validation, and schema helper functions for plugin authors. |
-| `sdk/provider/types.go` | Public request/response/runtime/event types used by plugin execution. |
+| `sdk/go.mod` | Separate Go module root for the integration-plugin SDK. |
+| `sdk/integration/integration.go` | Public integration interface and integration-spec types for external plugins. |
+| `sdk/integration/helpers.go` | Public config decode, validation, and schema helper functions for plugin authors. |
+| `sdk/integration/types.go` | Public request/response/runtime/event types used by plugin execution. |
 
 ## `scripts/`
 
@@ -906,8 +915,8 @@ Build helper scripts live here so release-style build commands do not have to be
 | `scripts/build-cloud.sh` | Builds a Cloud binary with `BuildEdition=cloud`. |
 | `scripts/build-community.sh` | Builds a Community binary with `BuildEdition=community`. |
 | `scripts/build-internal.sh` | Builds an Internal binary with `BuildEdition=internal`. |
-| `scripts/generate-provider-docs.sh` | Regenerates the committed provider reference docs in `docs/providers/generated/`. |
-| `scripts/new-provider.sh` | Scaffolds a new built-in provider package in the canonical provider tree. |
+| `scripts/generate-integration-docs.sh` | Regenerates the committed integration reference docs in `docs/integrations/generated/`. |
+| `scripts/new-integration.sh` | Scaffolds a new built-in integration package in the canonical integration tree. |
 
 ## `artifacts/`
 

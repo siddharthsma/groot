@@ -16,13 +16,13 @@ import (
 
 	agenttools "groot/internal/agent/tools"
 	"groot/internal/config"
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/connectors/outbound"
-	"groot/internal/connectors/provider"
-	_ "groot/internal/connectors/providers/builtin"
-	"groot/internal/connectors/registry"
 	eventpkg "groot/internal/event"
 	"groot/internal/functiondestination"
+	"groot/internal/integrations"
+	_ "groot/internal/integrations/builtin"
+	"groot/internal/integrations/registry"
 	"groot/internal/tenant"
 )
 
@@ -36,20 +36,20 @@ type ToolExecutionRequest struct {
 }
 
 type ToolExecutionResult struct {
-	Tool       string          `json:"tool"`
-	OK         bool            `json:"ok"`
-	Result     json.RawMessage `json:"result"`
-	ExternalID string          `json:"external_id,omitempty"`
-	StatusCode int             `json:"status_code,omitempty"`
-	Provider   string          `json:"provider,omitempty"`
-	Model      string          `json:"model,omitempty"`
-	Usage      outbound.Usage  `json:"usage"`
+	Tool        string          `json:"tool"`
+	OK          bool            `json:"ok"`
+	Result      json.RawMessage `json:"result"`
+	ExternalID  string          `json:"external_id,omitempty"`
+	StatusCode  int             `json:"status_code,omitempty"`
+	Integration string          `json:"integration,omitempty"`
+	Model       string          `json:"model,omitempty"`
+	Usage       outbound.Usage  `json:"usage"`
 }
 
 type Executor struct {
 	store                Store
 	functionDestinations FunctionDestinationStore
-	providerRuntime      provider.RuntimeConfig
+	integrationRuntime   integration.RuntimeConfig
 	httpClient           *http.Client
 }
 
@@ -62,7 +62,7 @@ func NewExecutor(store Store, functionDestinations FunctionDestinationStore, sla
 		store:                store,
 		functionDestinations: functionDestinations,
 		httpClient:           client,
-		providerRuntime: provider.RuntimeConfig{
+		integrationRuntime: integration.RuntimeConfig{
 			Slack:  slackCfg,
 			Resend: resendCfg,
 			Notion: notionCfg,
@@ -89,22 +89,22 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ToolExecutionRequest) (T
 	}
 
 	switch target.ExecutionKind {
-	case agenttools.ExecutionKindConnector:
-		instance, err := e.resolveToolConnector(ctx, req.TenantID, target.ConnectorName)
+	case agenttools.ExecutionKindConnection:
+		instance, err := e.resolveToolConnector(ctx, req.TenantID, target.IntegrationName)
 		if err != nil {
 			return ToolExecutionResult{}, err
 		}
-		executor := registry.GetProvider(instance.ConnectorName)
+		executor := registry.GetIntegration(instance.IntegrationName)
 		if executor == nil {
-			return ToolExecutionResult{}, fmt.Errorf("unsupported connector %s", instance.ConnectorName)
+			return ToolExecutionResult{}, fmt.Errorf("unsupported connection %s", instance.IntegrationName)
 		}
 		instanceConfig := map[string]any{}
 		if len(instance.Config) > 0 {
 			if err := json.Unmarshal(instance.Config, &instanceConfig); err != nil {
-				return ToolExecutionResult{}, fmt.Errorf("decode connector config: %w", err)
+				return ToolExecutionResult{}, fmt.Errorf("decode connection config: %w", err)
 			}
 		}
-		result, err := executor.ExecuteOperation(ctx, provider.OperationRequest{
+		result, err := executor.ExecuteOperation(ctx, integration.OperationRequest{
 			Operation: target.Operation,
 			Config:    instanceConfig,
 			Params:    req.Arguments,
@@ -112,27 +112,27 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ToolExecutionRequest) (T
 				EventID:    uuid.New(),
 				TenantID:   req.TenantID,
 				Type:       "llm.agent.tool_call.v1",
-				Source:     "llm",
+				Source:     eventpkg.Source{Kind: eventpkg.SourceKindInternal, Integration: "llm"},
 				SourceKind: eventpkg.SourceKindInternal,
 				ChainDepth: 0,
 				Timestamp:  time.Now().UTC(),
 				Payload:    json.RawMessage(`{}`),
 			},
 			HTTPClient: e.httpClient,
-			Runtime:    e.providerRuntime,
+			Runtime:    e.integrationRuntime,
 		})
 		if err != nil {
 			return ToolExecutionResult{}, err
 		}
 		return ToolExecutionResult{
-			Tool:       req.Tool,
-			OK:         true,
-			Result:     normalizeConnectorResult(result),
-			ExternalID: result.ExternalID,
-			StatusCode: result.StatusCode,
-			Provider:   result.Provider,
-			Model:      result.Model,
-			Usage:      result.Usage,
+			Tool:        req.Tool,
+			OK:          true,
+			Result:      normalizeConnectionResult(result),
+			ExternalID:  result.ExternalID,
+			StatusCode:  result.StatusCode,
+			Integration: result.Integration,
+			Model:       result.Model,
+			Usage:       result.Usage,
 		}, nil
 	case agenttools.ExecutionKindFunction:
 		destination, err := e.functionDestinations.Get(ctx, tenant.ID(req.TenantID), *target.FunctionDestinationID)
@@ -148,7 +148,7 @@ func (e *Executor) ExecuteTool(ctx context.Context, req ToolExecutionRequest) (T
 type resolvedTool struct {
 	DefinitionName        string
 	ExecutionKind         string
-	ConnectorName         string
+	IntegrationName       string
 	Operation             string
 	FunctionDestinationID *uuid.UUID
 }
@@ -170,18 +170,18 @@ func resolveTool(definition Definition, requested string) (resolvedTool, error) 
 	}
 	if binding, ok := definition.ToolBindings[requested]; ok {
 		switch binding.Type {
-		case BindingTypeConnector:
-			def, ok := registryDefs[binding.ConnectorName+"."+binding.Operation]
+		case BindingTypeConnection:
+			def, ok := registryDefs[binding.IntegrationName+"."+binding.Operation]
 			if !ok {
-				return resolvedTool{}, fmt.Errorf("unknown bound connector tool")
+				return resolvedTool{}, fmt.Errorf("unknown bound connection tool")
 			}
-			return resolvedTool{DefinitionName: def.Name, ExecutionKind: def.ExecutionKind, ConnectorName: def.ConnectorName, Operation: def.Operation}, nil
+			return resolvedTool{DefinitionName: def.Name, ExecutionKind: def.ExecutionKind, IntegrationName: def.IntegrationName, Operation: def.Operation}, nil
 		case BindingTypeFunction:
 			def := registryDefs["function.invoke"]
 			return resolvedTool{
 				DefinitionName:        def.Name,
 				ExecutionKind:         def.ExecutionKind,
-				ConnectorName:         def.ConnectorName,
+				IntegrationName:       def.IntegrationName,
 				Operation:             def.Operation,
 				FunctionDestinationID: binding.FunctionDestinationID,
 			}, nil
@@ -193,18 +193,18 @@ func resolveTool(definition Definition, requested string) (resolvedTool, error) 
 	if !ok {
 		return resolvedTool{}, fmt.Errorf("unknown tool")
 	}
-	return resolvedTool{DefinitionName: def.Name, ExecutionKind: def.ExecutionKind, ConnectorName: def.ConnectorName, Operation: def.Operation}, nil
+	return resolvedTool{DefinitionName: def.Name, ExecutionKind: def.ExecutionKind, IntegrationName: def.IntegrationName, Operation: def.Operation}, nil
 }
 
-func (e *Executor) resolveToolConnector(ctx context.Context, tenantID uuid.UUID, connectorName string) (connectorinstance.Instance, error) {
-	instance, err := e.store.GetTenantConnectorInstanceByName(ctx, tenant.ID(tenantID), connectorName)
+func (e *Executor) resolveToolConnector(ctx context.Context, tenantID uuid.UUID, connectorName string) (connection.Instance, error) {
+	instance, err := e.store.GetTenantConnectionByName(ctx, tenant.ID(tenantID), connectorName)
 	if err == nil {
 		return instance, nil
 	}
-	if instance, err = e.store.GetGlobalConnectorInstanceByName(ctx, connectorName); err == nil {
+	if instance, err = e.store.GetGlobalConnectionByName(ctx, connectorName); err == nil {
 		return instance, nil
 	}
-	return connectorinstance.Instance{}, fmt.Errorf("connector instance not found")
+	return connection.Instance{}, fmt.Errorf("connection not found")
 }
 
 func (e *Executor) invokeFunction(ctx context.Context, destination functiondestination.Destination, req ToolExecutionRequest) (ToolExecutionResult, error) {
@@ -212,7 +212,7 @@ func (e *Executor) invokeFunction(ctx context.Context, destination functiondesti
 		"event_id":    uuid.New().String(),
 		"tenant_id":   req.TenantID.String(),
 		"type":        "llm.agent.tool_call.v1",
-		"source":      "llm",
+		"source":      map[string]any{"kind": eventpkg.SourceKindInternal, "integration": "llm"},
 		"source_kind": eventpkg.SourceKindInternal,
 		"chain_depth": 0,
 		"timestamp":   time.Now().UTC().Format(time.RFC3339),
@@ -263,7 +263,7 @@ func (e *Executor) invokeFunction(ctx context.Context, destination functiondesti
 	}, nil
 }
 
-func normalizeConnectorResult(result outbound.Result) json.RawMessage {
+func normalizeConnectionResult(result outbound.Result) json.RawMessage {
 	if len(result.Output) > 0 {
 		return result.Output
 	}

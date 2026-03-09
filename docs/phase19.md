@@ -72,7 +72,7 @@ emitted
 
 # Stable ID Format
 
-connector instance: conninst:<uuid>
+connection: conninst:<uuid>
 
 event type: eventtype:<full_name>
 

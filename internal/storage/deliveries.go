@@ -279,14 +279,36 @@ func (d *DB) SaveResultEvent(ctx context.Context, jobID uuid.UUID, event eventpk
 	defer func() { _ = tx.Rollback() }()
 
 	const insertEvent = `
-		INSERT INTO events (event_id, tenant_id, type, source, source_kind, chain_depth, timestamp, payload, schema_full_name, schema_version, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+		INSERT INTO events (
+			event_id, tenant_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
+			lineage_integration, lineage_connection_id, lineage_connection_name, lineage_external_account_id,
+			chain_depth, timestamp, payload, schema_full_name, schema_version, created_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
 	`
 	var schemaVersion any
 	if event.SchemaVersion > 0 {
 		schemaVersion = event.SchemaVersion
 	}
-	if _, err := tx.ExecContext(ctx, insertEvent, event.EventID, event.TenantID, event.Type, event.Source, event.SourceKind, event.ChainDepth, event.Timestamp, []byte(event.Payload), nullableString(event.SchemaFullName), schemaVersion); err != nil {
+	if _, err := tx.ExecContext(ctx, insertEvent,
+		event.EventID,
+		event.TenantID,
+		event.Type,
+		event.Source.Integration,
+		event.SourceKind,
+		event.Source.ConnectionID,
+		nullableString(event.Source.ConnectionName),
+		nullableString(event.Source.ExternalAccountID),
+		lineageIntegration(event.Lineage),
+		lineageConnectionID(event.Lineage),
+		lineageConnectionName(event.Lineage),
+		lineageExternalAccountID(event.Lineage),
+		event.ChainDepth,
+		event.Timestamp,
+		[]byte(event.Payload),
+		nullableString(event.SchemaFullName),
+		schemaVersion,
+	); err != nil {
 		return false, fmt.Errorf("insert result event: %w", err)
 	}
 

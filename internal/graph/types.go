@@ -23,7 +23,7 @@ type Edge struct {
 
 type TopologyRequest struct {
 	TenantID        *uuid.UUID
-	ConnectorName   string
+	IntegrationName string
 	EventTypePrefix string
 	IncludeGlobal   bool
 	Limit           int

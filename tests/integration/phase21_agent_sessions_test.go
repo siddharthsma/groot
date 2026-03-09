@@ -47,7 +47,7 @@ func TestPhase21SameSessionReuse(t *testing.T) {
 		"AGENT_RUNTIME_BASE_URL": runtimeServer.URL,
 	}})
 	tenantID, legacyKey := h.CreateTenant("phase21-sessions")
-	llmConnectorID := createGlobalLLMConnector(t, h)
+	llmConnectionID := createGlobalLLMConnection(t, h)
 	agentID := createAgent(t, h, legacyKey, map[string]any{
 		"name":          "task_chaser",
 		"instructions":  "Follow up on task updates",
@@ -56,8 +56,8 @@ func TestPhase21SameSessionReuse(t *testing.T) {
 	})
 
 	resp, body := h.JSONRequest(http.MethodPost, "/subscriptions", bearerHeader(legacyKey), map[string]any{
-		"destination_type":          "connector",
-		"connector_instance_id":     llmConnectorID,
+		"destination_type":          "connection",
+		"connection_id":             llmConnectionID,
 		"agent_id":                  agentID,
 		"session_key_template":      "salesforce:task:{{payload.task.id}}",
 		"session_create_if_missing": true,

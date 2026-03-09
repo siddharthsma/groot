@@ -70,37 +70,37 @@ func TestScenarioSupportAgent(t *testing.T) {
 	}})
 
 	tenantID, legacyKey := h.CreateTenant("phase20-agent")
-	llmConnectorID := createGlobalLLMConnector(t, h)
+	llmConnectionID := createGlobalLLMConnection(t, h)
 
-	resp, body := h.JSONRequest(http.MethodPost, "/connector-instances", bearerHeader(legacyKey), map[string]any{
-		"connector_name": "slack",
+	resp, body := h.JSONRequest(http.MethodPost, "/connections", bearerHeader(legacyKey), map[string]any{
+		"integration_name": "slack",
 		"config": map[string]any{
 			"bot_token":       "xoxb-phase20-agent",
 			"default_channel": "C123",
 		},
 	})
 	mustStatus(t, resp, body, http.StatusOK)
-	slackConnectorID := mustString(t, decodeBody(t, body)["id"])
+	slackConnectionID := mustString(t, decodeBody(t, body)["id"])
 
-	resp, body = h.JSONRequest(http.MethodPost, "/connector-instances", bearerHeader(legacyKey), map[string]any{
-		"connector_name": "notion",
+	resp, body = h.JSONRequest(http.MethodPost, "/connections", bearerHeader(legacyKey), map[string]any{
+		"integration_name": "notion",
 		"config": map[string]any{
 			"integration_token": "secret-notion-token",
 		},
 	})
 	mustStatus(t, resp, body, http.StatusOK)
-	notionConnectorID := mustString(t, decodeBody(t, body)["id"])
+	notionConnectionID := mustString(t, decodeBody(t, body)["id"])
 
 	resp, body = h.JSONRequest(http.MethodPost, "/routes/inbound", bearerHeader(legacyKey), map[string]any{
-		"connector_name":        "slack",
-		"route_key":             "T123",
-		"connector_instance_id": slackConnectorID,
+		"integration_name": "slack",
+		"route_key":        "T123",
+		"connection_id":    slackConnectionID,
 	})
 	mustStatus(t, resp, body, http.StatusOK)
 
 	resp, body = h.JSONRequest(http.MethodPost, "/subscriptions", bearerHeader(legacyKey), map[string]any{
-		"destination_type":      "connector",
-		"connector_instance_id": llmConnectorID,
+		"destination_type": "connection",
+		"connection_id":    llmConnectionID,
 		"agent_id": createAgent(t, h, legacyKey, map[string]any{
 			"name":         "support_agent",
 			"instructions": "Help with support workflow",
@@ -120,7 +120,7 @@ func TestScenarioSupportAgent(t *testing.T) {
 	})
 	mustStatus(t, resp, body, http.StatusCreated)
 
-	_ = notionConnectorID
+	_ = notionConnectionID
 	payload := map[string]any{
 		"type":    "event_callback",
 		"team_id": "T123",

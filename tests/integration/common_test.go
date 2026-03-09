@@ -99,23 +99,23 @@ func createRealAPIKey(t *testing.T, h *helpers.Harness, legacyKey string, name s
 	return decodeBody(t, body)["api_key"].(string)
 }
 
-func createGlobalLLMConnector(t *testing.T, h *helpers.Harness) string {
+func createGlobalLLMConnection(t *testing.T, h *helpers.Harness) string {
 	t.Helper()
-	connectorID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-	resp, body := h.JSONRequest(http.MethodPut, "/admin/connector-instances/"+connectorID, adminHeader(h.AdminKey), map[string]any{
-		"connector_name": "llm",
-		"scope":          "global",
+	connectionID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	resp, body := h.JSONRequest(http.MethodPut, "/admin/connections/"+connectionID, adminHeader(h.AdminKey), map[string]any{
+		"integration_name": "llm",
+		"scope":            "global",
 		"config": map[string]any{
-			"default_provider": "openai",
-			"providers": map[string]any{
+			"default_integration": "openai",
+			"integrations": map[string]any{
 				"openai": map[string]any{"api_key": "env:OPENAI_API_KEY"},
 			},
 		},
 	})
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("create global llm connector status=%d body=%s logs=\n%s", resp.StatusCode, body, h.Logs())
+		t.Fatalf("create global llm connection status=%d body=%s logs=\n%s", resp.StatusCode, body, h.Logs())
 	}
-	return connectorID
+	return connectionID
 }
 
 func createAgent(t *testing.T, h *helpers.Harness, legacyKey string, request map[string]any) string {

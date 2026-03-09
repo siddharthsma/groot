@@ -14,10 +14,7 @@ import (
 	"groot/internal/apikey"
 	iauth "groot/internal/auth"
 	"groot/internal/connectedapp"
-	"groot/internal/connectorinstance"
-	"groot/internal/connectors/catalog"
-	"groot/internal/connectors/providers/resend"
-	slackconnector "groot/internal/connectors/providers/slack"
+	"groot/internal/connection"
 	"groot/internal/delivery"
 	"groot/internal/edition"
 	"groot/internal/event"
@@ -25,6 +22,9 @@ import (
 	"groot/internal/graph"
 	"groot/internal/inboundroute"
 	"groot/internal/ingest"
+	"groot/internal/integrations/catalog"
+	"groot/internal/integrations/resend"
+	"groot/internal/integrations/slack"
 	"groot/internal/observability"
 	"groot/internal/replay"
 	"groot/internal/schema"
@@ -97,12 +97,12 @@ type AgentToolService interface {
 	ExecuteTool(context.Context, agent.ToolExecutionRequest) (agent.ToolExecutionResult, error)
 }
 
-type ConnectorInstanceService interface {
-	Create(context.Context, *tenant.ID, string, string, json.RawMessage) (connectorinstance.Instance, error)
-	List(context.Context, tenant.ID) ([]connectorinstance.Instance, error)
-	ListAll(context.Context) ([]connectorinstance.Instance, error)
-	AdminList(context.Context, *tenant.ID, string, string) ([]connectorinstance.Instance, error)
-	AdminUpsert(context.Context, uuid.UUID, *tenant.ID, string, string, json.RawMessage) (connectorinstance.Instance, error)
+type ConnectionService interface {
+	Create(context.Context, *tenant.ID, string, string, json.RawMessage) (connection.Instance, error)
+	List(context.Context, tenant.ID) ([]connection.Instance, error)
+	ListAll(context.Context) ([]connection.Instance, error)
+	AdminList(context.Context, *tenant.ID, string, string) ([]connection.Instance, error)
+	AdminUpsert(context.Context, uuid.UUID, *tenant.ID, string, string, json.RawMessage) (connection.Instance, error)
 }
 
 type InboundRouteService interface {
@@ -139,16 +139,16 @@ type SchemaService interface {
 	Get(context.Context, string) (schema.Schema, error)
 }
 
-type ProviderCatalogService interface {
-	List(context.Context) ([]catalog.ProviderSummary, error)
-	Get(context.Context, string) (catalog.ProviderDetail, error)
+type IntegrationCatalogService interface {
+	List(context.Context) ([]catalog.IntegrationSummary, error)
+	Get(context.Context, string) (catalog.IntegrationDetail, error)
 	ListOperations(context.Context, string) ([]catalog.OperationCatalog, error)
 	ListSchemas(context.Context, string) ([]catalog.SchemaCatalog, error)
 	GetConfig(context.Context, string) (catalog.ConfigCatalog, error)
 }
 
 type SlackService interface {
-	HandleEvents(context.Context, []byte, http.Header) (slackconnector.Result, error)
+	HandleEvents(context.Context, []byte, http.Header) (slack.Result, error)
 }
 
 type Authenticator interface {
@@ -182,13 +182,13 @@ type Options struct {
 	Apps                     ConnectedAppService
 	Functions                FunctionDestinationService
 	Subs                     SubscriptionService
-	ConnectorInstances       ConnectorInstanceService
+	Connections              ConnectionService
 	InboundRoutes            InboundRouteService
 	Deliveries               DeliveryService
 	Replay                   ReplayService
 	AdminReplay              ReplayService
 	Schemas                  SchemaService
-	ProviderCatalog          ProviderCatalogService
+	IntegrationCatalog       IntegrationCatalogService
 	Resend                   ResendService
 	Slack                    SlackService
 	Stripe                   StripeService
@@ -222,13 +222,13 @@ type State struct {
 	AppSvc                   ConnectedAppService
 	FunctionSvc              FunctionDestinationService
 	SubSvc                   SubscriptionService
-	ConnectorSvc             ConnectorInstanceService
+	ConnectionSvc            ConnectionService
 	InboundRouteSvc          InboundRouteService
 	DeliverySvc              DeliveryService
 	ReplaySvc                ReplayService
 	AdminReplaySvc           ReplayService
 	SchemaSvc                SchemaService
-	ProviderCatalogSvc       ProviderCatalogService
+	IntegrationCatalogSvc    IntegrationCatalogService
 	ResendSvc                ResendService
 	SlackSvc                 SlackService
 	StripeSvc                StripeService
@@ -264,13 +264,13 @@ func NewState(opts Options) *State {
 		AppSvc:                   opts.Apps,
 		FunctionSvc:              opts.Functions,
 		SubSvc:                   opts.Subs,
-		ConnectorSvc:             opts.ConnectorInstances,
+		ConnectionSvc:            opts.Connections,
 		InboundRouteSvc:          opts.InboundRoutes,
 		DeliverySvc:              opts.Deliveries,
 		ReplaySvc:                opts.Replay,
 		AdminReplaySvc:           opts.AdminReplay,
 		SchemaSvc:                opts.Schemas,
-		ProviderCatalogSvc:       opts.ProviderCatalog,
+		IntegrationCatalogSvc:    opts.IntegrationCatalog,
 		ResendSvc:                opts.Resend,
 		SlackSvc:                 opts.Slack,
 		StripeSvc:                opts.Stripe,

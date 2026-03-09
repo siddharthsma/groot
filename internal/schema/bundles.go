@@ -23,14 +23,14 @@ func resultSpec(connector, operation string, version int, success bool, outputSc
 		"input_event_id":   stringSchema(),
 		"subscription_id":  stringSchema(),
 		"delivery_job_id":  stringSchema(),
-		"connector_name":   stringSchema(),
+		"integration_name": stringSchema(),
 		"operation":        stringSchema(),
 		"status":           enumStringSchema(statusValue),
 		"external_id":      nullableStringSchema(),
 		"http_status_code": nullableIntegerSchema(),
 		"output":           objectSchema(map[string]any{}, false),
 	}
-	required := []string{"input_event_id", "subscription_id", "delivery_job_id", "connector_name", "operation", "status", "output"}
+	required := []string{"input_event_id", "subscription_id", "delivery_job_id", "integration_name", "operation", "status", "output"}
 	if success {
 		properties["status"] = enumStringSchema("succeeded")
 		if outputSchema != nil {

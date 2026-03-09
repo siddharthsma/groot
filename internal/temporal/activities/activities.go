@@ -12,7 +12,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -23,26 +22,26 @@ import (
 	agentruntime "groot/internal/agent/runtime"
 	"groot/internal/config"
 	"groot/internal/connectedapp"
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/connectors/outbound"
-	"groot/internal/connectors/provider"
-	_ "groot/internal/connectors/providers/builtin"
-	llmconnector "groot/internal/connectors/providers/llm"
-	notionconnector "groot/internal/connectors/providers/notion"
-	resendconnector "groot/internal/connectors/providers/resend"
-	slackconnector "groot/internal/connectors/providers/slack"
-	"groot/internal/connectors/registry"
 	"groot/internal/delivery"
 	"groot/internal/event"
 	eventpkg "groot/internal/event"
 	"groot/internal/functiondestination"
+	"groot/internal/integrations"
+	_ "groot/internal/integrations/builtin"
+	llm "groot/internal/integrations/llm"
+	notion "groot/internal/integrations/notion"
+	"groot/internal/integrations/registry"
+	resend "groot/internal/integrations/resend"
+	slack "groot/internal/integrations/slack"
 	"groot/internal/subscription"
 	"groot/internal/tenant"
 )
 
 const DeliverHTTPName = "deliver_http"
 const InvokeFunctionName = "invoke_function"
-const ExecuteConnectorName = "execute_connector"
+const ExecuteIntegrationName = "execute_connector"
 const ExecuteAgentToolName = "execute_agent_tool"
 
 const (
@@ -71,9 +70,9 @@ type Store interface {
 	GetSubscriptionByID(context.Context, uuid.UUID) (subscription.Subscription, error)
 	GetConnectedApp(context.Context, uuid.UUID, uuid.UUID) (connectedapp.App, error)
 	GetFunctionDestination(context.Context, uuid.UUID, uuid.UUID) (functiondestination.Destination, error)
-	GetConnectorInstance(context.Context, uuid.UUID, uuid.UUID) (connectorinstance.Instance, error)
-	GetTenantConnectorInstanceByName(context.Context, uuid.UUID, string) (connectorinstance.Instance, error)
-	GetGlobalConnectorInstanceByName(context.Context, string) (connectorinstance.Instance, error)
+	GetConnection(context.Context, uuid.UUID, uuid.UUID) (connection.Instance, error)
+	GetTenantConnectionByName(context.Context, uuid.UUID, string) (connection.Instance, error)
+	GetGlobalConnectionByName(context.Context, string) (connection.Instance, error)
 	GetEvent(context.Context, uuid.UUID) (eventpkg.Event, error)
 	SetDeliveryJobAttempt(context.Context, uuid.UUID, int) error
 	MarkDeliveryJobSucceeded(context.Context, uuid.UUID, time.Time, *string, *int) error
@@ -95,15 +94,15 @@ type AgentManager interface {
 }
 
 type Activities struct {
-	store           Store
-	httpClient      *http.Client
-	providerRuntime provider.RuntimeConfig
-	resultEmitter   *event.Emitter
-	metrics         Metrics
-	logger          *slog.Logger
-	agentRuntime    *agentruntime.Client
-	agentRuntimeCfg config.AgentRuntimeConfig
-	agentManager    AgentManager
+	store              Store
+	httpClient         *http.Client
+	integrationRuntime integration.RuntimeConfig
+	resultEmitter      *event.Emitter
+	metrics            Metrics
+	logger             *slog.Logger
+	agentRuntime       *agentruntime.Client
+	agentRuntimeCfg    config.AgentRuntimeConfig
+	agentManager       AgentManager
 }
 
 type Metrics interface {
@@ -145,7 +144,7 @@ type Subscription struct {
 	DestinationType        string
 	ConnectedAppID         string
 	FunctionDestinationID  string
-	ConnectorInstanceID    string
+	ConnectionID           string
 	AgentID                string
 	SessionKeyTemplate     string
 	SessionCreateIfMissing bool
@@ -167,22 +166,22 @@ type FunctionDestination struct {
 	TimeoutSeconds int
 }
 
-type ConnectorInstance struct {
-	ID            string
-	ConnectorName string
-	Scope         string
-	Config        json.RawMessage
+type Connection struct {
+	ID              string
+	IntegrationName string
+	Scope           string
+	Config          json.RawMessage
 }
 
-type ConnectorResult struct {
-	ExternalID string
-	StatusCode int
-	Channel    string
-	Text       string
-	Output     json.RawMessage
-	Provider   string
-	Model      string
-	Usage      outbound.Usage
+type ConnectionResult struct {
+	ExternalID  string
+	StatusCode  int
+	Channel     string
+	Text        string
+	Output      json.RawMessage
+	Integration string
+	Model       string
+	Usage       outbound.Usage
 }
 
 type FunctionResult struct {
@@ -191,14 +190,15 @@ type FunctionResult struct {
 }
 
 type Event struct {
-	EventID    string          `json:"event_id"`
-	TenantID   string          `json:"tenant_id"`
-	Type       string          `json:"type"`
-	Source     string          `json:"source"`
-	SourceKind string          `json:"source_kind"`
-	ChainDepth int             `json:"chain_depth"`
-	Timestamp  time.Time       `json:"timestamp"`
-	Payload    json.RawMessage `json:"payload"`
+	EventID    string           `json:"event_id"`
+	TenantID   string           `json:"tenant_id"`
+	Type       string           `json:"type"`
+	Source     eventpkg.Source  `json:"source"`
+	SourceKind string           `json:"source_kind"`
+	Lineage    *eventpkg.Lineage `json:"lineage,omitempty"`
+	ChainDepth int              `json:"chain_depth"`
+	Timestamp  time.Time        `json:"timestamp"`
+	Payload    json.RawMessage  `json:"payload"`
 }
 
 type ResultEventRequest struct {
@@ -208,7 +208,7 @@ type ResultEventRequest struct {
 	InputEventID          string
 	ExistingResultEventID string
 	InputEvent            Event
-	ConnectorName         string
+	IntegrationName       string
 	Operation             string
 	Status                string
 	ExternalID            *string
@@ -223,9 +223,9 @@ type ResultEventRequest struct {
 }
 
 type activityFailureDetails struct {
-	StatusCode int
-	Provider   string
-	Model      string
+	StatusCode  int
+	Integration string
+	Model       string
 }
 
 func New(deps Dependencies) *Activities {
@@ -236,7 +236,7 @@ func New(deps Dependencies) *Activities {
 	return &Activities{
 		store:      deps.Store,
 		httpClient: client,
-		providerRuntime: provider.RuntimeConfig{
+		integrationRuntime: integration.RuntimeConfig{
 			Slack:  deps.Slack,
 			Resend: deps.Resend,
 			Notion: config.NotionConfig{
@@ -286,7 +286,7 @@ func (a *Activities) LoadSubscription(ctx context.Context, subscriptionID string
 		DestinationType:        sub.DestinationType,
 		ConnectedAppID:         optionalUUIDString(sub.ConnectedAppID),
 		FunctionDestinationID:  optionalUUIDString(sub.FunctionDestinationID),
-		ConnectorInstanceID:    optionalUUIDString(sub.ConnectorInstanceID),
+		ConnectionID:           optionalUUIDString(sub.ConnectionID),
 		AgentID:                optionalUUIDString(sub.AgentID),
 		SessionKeyTemplate:     optionalString(sub.SessionKeyTemplate),
 		SessionCreateIfMissing: sub.SessionCreateIfMissing,
@@ -334,24 +334,24 @@ func (a *Activities) LoadFunctionDestination(ctx context.Context, functionDestin
 	}, nil
 }
 
-func (a *Activities) LoadConnectorInstance(ctx context.Context, connectorInstanceID string, tenantID string) (ConnectorInstance, error) {
+func (a *Activities) LoadConnection(ctx context.Context, connectorInstanceID string, tenantID string) (Connection, error) {
 	id, err := uuid.Parse(connectorInstanceID)
 	if err != nil {
-		return ConnectorInstance{}, err
+		return Connection{}, err
 	}
 	tID, err := uuid.Parse(tenantID)
 	if err != nil {
-		return ConnectorInstance{}, err
+		return Connection{}, err
 	}
-	instance, err := a.store.GetConnectorInstance(ctx, tID, id)
+	instance, err := a.store.GetConnection(ctx, tID, id)
 	if err != nil {
-		return ConnectorInstance{}, err
+		return Connection{}, err
 	}
-	return ConnectorInstance{
-		ID:            instance.ID.String(),
-		ConnectorName: instance.ConnectorName,
-		Scope:         instance.Scope,
-		Config:        instance.Config,
+	return Connection{
+		ID:              instance.ID.String(),
+		IntegrationName: instance.IntegrationName,
+		Scope:           instance.Scope,
+		Config:          instance.Config,
 	}, nil
 }
 
@@ -370,6 +370,7 @@ func (a *Activities) LoadEvent(ctx context.Context, eventID string) (Event, erro
 		Type:       event.Type,
 		Source:     event.Source,
 		SourceKind: event.SourceKind,
+		Lineage:    event.Lineage,
 		ChainDepth: event.ChainDepth,
 		Timestamp:  event.Timestamp,
 		Payload:    event.Payload,
@@ -506,26 +507,26 @@ func (a *Activities) InvokeFunction(ctx context.Context, deliveryJobID string, f
 	}, nil
 }
 
-func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string, tenantID string, event Event, connectorInstance ConnectorInstance, operation string, operationParams json.RawMessage, attempt int) (ConnectorResult, error) {
-	executor := registry.GetProvider(connectorInstance.ConnectorName)
+func (a *Activities) ExecuteConnection(ctx context.Context, deliveryJobID string, tenantID string, event Event, connectorInstance Connection, operation string, operationParams json.RawMessage, attempt int) (ConnectionResult, error) {
+	executor := registry.GetIntegration(connectorInstance.IntegrationName)
 	if executor == nil {
-		return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: fmt.Errorf("unsupported connector: %s", connectorInstance.ConnectorName)})
+		return ConnectionResult{}, wrapActivityError(outbound.PermanentError{Err: fmt.Errorf("unsupported connection: %s", connectorInstance.IntegrationName)})
 	}
 	if a.logger != nil {
 		a.logger.Info("connector_delivery_started",
 			slog.String("delivery_job_id", deliveryJobID),
-			slog.String("connector_name", connectorInstance.ConnectorName),
+			slog.String("integration_name", connectorInstance.IntegrationName),
 			slog.String("operation", operation),
 			slog.String("tenant_id", tenantID),
 			slog.String("event_id", event.EventID),
 			slog.Int("attempt", attempt),
 		)
 	}
-	if connectorInstance.ConnectorName == notionconnector.ConnectorName {
+	if connectorInstance.IntegrationName == notion.IntegrationName {
 		if a.logger != nil {
 			a.logger.Info("notion_action_started",
 				slog.String("tenant_id", tenantID),
-				slog.String("connector_name", connectorInstance.ConnectorName),
+				slog.String("integration_name", connectorInstance.IntegrationName),
 				slog.String("operation", operation),
 				slog.String("delivery_job_id", deliveryJobID),
 				slog.String("event_id", event.EventID),
@@ -535,7 +536,7 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 			a.metrics.IncNotionActions()
 		}
 	}
-	if connectorInstance.ConnectorName == llmconnector.ConnectorName {
+	if connectorInstance.IntegrationName == llm.IntegrationName {
 		if a.logger != nil {
 			a.logger.Info("llm_action_started",
 				slog.String("tenant_id", tenantID),
@@ -545,7 +546,7 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 			)
 		}
 	}
-	if connectorInstance.ConnectorName == resendconnector.ConnectorName && operation == resendconnector.OperationSendEmail && a.logger != nil {
+	if connectorInstance.IntegrationName == resend.IntegrationName && operation == resend.OperationSendEmail && a.logger != nil {
 		a.logger.Info("resend_send_email_started",
 			slog.String("tenant_id", tenantID),
 			slog.String("delivery_job_id", deliveryJobID),
@@ -553,29 +554,29 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 		)
 	}
 	if a.metrics != nil {
-		a.metrics.IncConnectorDeliveries(connectorInstance.ConnectorName, operation)
-		if connectorInstance.Scope == connectorinstance.ScopeGlobal {
-			a.metrics.IncGlobalConnectorDeliveries(connectorInstance.ConnectorName, operation)
+		a.metrics.IncConnectorDeliveries(connectorInstance.IntegrationName, operation)
+		if connectorInstance.Scope == connection.ScopeGlobal {
+			a.metrics.IncGlobalConnectorDeliveries(connectorInstance.IntegrationName, operation)
 		}
 	}
 
 	eventID, err := uuid.Parse(event.EventID)
 	if err != nil {
-		return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: err})
+		return ConnectionResult{}, wrapActivityError(outbound.PermanentError{Err: err})
 	}
 	parsedTenantID, err := uuid.Parse(event.TenantID)
 	if err != nil {
-		return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: err})
+		return ConnectionResult{}, wrapActivityError(outbound.PermanentError{Err: err})
 	}
 	instanceConfig := map[string]any{}
 	if len(connectorInstance.Config) > 0 {
 		if err := json.Unmarshal(connectorInstance.Config, &instanceConfig); err != nil {
-			return ConnectorResult{}, wrapActivityError(outbound.PermanentError{Err: fmt.Errorf("decode connector config: %w", err)})
+			return ConnectionResult{}, wrapActivityError(outbound.PermanentError{Err: fmt.Errorf("decode connection config: %w", err)})
 		}
 	}
 
 	startedAt := time.Now()
-	result, err := executor.ExecuteOperation(ctx, provider.OperationRequest{
+	result, err := executor.ExecuteOperation(ctx, integration.OperationRequest{
 		Operation: operation,
 		Config:    instanceConfig,
 		Params:    renderOperationParams(operationParams, event),
@@ -585,80 +586,81 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 			Type:       event.Type,
 			Source:     event.Source,
 			SourceKind: event.SourceKind,
+			Lineage:    event.Lineage,
 			ChainDepth: event.ChainDepth,
 			Timestamp:  event.Timestamp,
 			Payload:    event.Payload,
 		},
 		HTTPClient: a.httpClient,
-		Runtime:    a.providerRuntime,
+		Runtime:    a.integrationRuntime,
 	})
 	if err != nil {
 		if a.metrics != nil {
-			a.metrics.IncConnectorDeliveryFailures(connectorInstance.ConnectorName, operation)
-			if connectorInstance.ConnectorName == notionconnector.ConnectorName {
+			a.metrics.IncConnectorDeliveryFailures(connectorInstance.IntegrationName, operation)
+			if connectorInstance.IntegrationName == notion.IntegrationName {
 				a.metrics.IncNotionActionFailures()
 			}
-			if connectorInstance.ConnectorName == llmconnector.ConnectorName {
-				a.metrics.IncLLMRequests(connectorErrorProvider(err), operation)
-				a.metrics.IncLLMFailures(connectorErrorProvider(err))
-				a.metrics.ObserveLLMLatency(connectorErrorProvider(err), operation, time.Since(startedAt).Seconds())
+			if connectorInstance.IntegrationName == llm.IntegrationName {
+				a.metrics.IncLLMRequests(connectorErrorIntegration(err), operation)
+				a.metrics.IncLLMFailures(connectorErrorIntegration(err))
+				a.metrics.ObserveLLMLatency(connectorErrorIntegration(err), operation, time.Since(startedAt).Seconds())
 			}
 		}
 		if a.logger != nil {
 			a.logger.Info("connector_delivery_failed",
 				slog.String("delivery_job_id", deliveryJobID),
-				slog.String("connector_name", connectorInstance.ConnectorName),
+				slog.String("integration_name", connectorInstance.IntegrationName),
 				slog.String("operation", operation),
 				slog.String("tenant_id", tenantID),
 				slog.String("event_id", event.EventID),
 				slog.Int("attempt", attempt),
 			)
-			if connectorInstance.ConnectorName == notionconnector.ConnectorName {
+			if connectorInstance.IntegrationName == notion.IntegrationName {
 				a.logger.Info("notion_action_failed",
 					slog.String("tenant_id", tenantID),
-					slog.String("connector_name", connectorInstance.ConnectorName),
+					slog.String("integration_name", connectorInstance.IntegrationName),
 					slog.String("operation", operation),
 					slog.String("delivery_job_id", deliveryJobID),
 					slog.String("event_id", event.EventID),
 				)
 			}
-			if connectorInstance.ConnectorName == llmconnector.ConnectorName {
+			if connectorInstance.IntegrationName == llm.IntegrationName {
 				a.logger.Info("llm_action_failed",
 					slog.String("tenant_id", tenantID),
 					slog.String("operation", operation),
-					slog.String("provider", connectorErrorProvider(err)),
+					slog.String("integration", connectorErrorIntegration(err)),
 					slog.String("model", connectorErrorModel(err)),
 					slog.String("delivery_job_id", deliveryJobID),
 					slog.String("event_id", event.EventID),
 				)
 			}
 		}
-		return ConnectorResult{}, wrapActivityError(err)
+		return ConnectionResult{}, wrapActivityError(err)
 	}
 
 	if a.logger != nil {
 		a.logger.Info("connector_delivery_succeeded",
 			slog.String("delivery_job_id", deliveryJobID),
-			slog.String("connector_name", connectorInstance.ConnectorName),
+			slog.String("integration_name", connectorInstance.IntegrationName),
 			slog.String("operation", operation),
 			slog.String("tenant_id", tenantID),
 			slog.String("event_id", event.EventID),
 			slog.Int("attempt", attempt),
 		)
-		if connectorInstance.ConnectorName == notionconnector.ConnectorName {
+		if connectorInstance.IntegrationName == notion.IntegrationName {
 			a.logger.Info("notion_action_succeeded",
 				slog.String("tenant_id", tenantID),
-				slog.String("connector_name", connectorInstance.ConnectorName),
+				slog.String("integration_name", connectorInstance.IntegrationName),
 				slog.String("operation", operation),
 				slog.String("delivery_job_id", deliveryJobID),
 				slog.String("event_id", event.EventID),
 			)
 		}
-		if connectorInstance.ConnectorName == llmconnector.ConnectorName {
+		if connectorInstance.IntegrationName == llm.IntegrationName {
 			a.logger.Info("llm_action_succeeded",
 				slog.String("tenant_id", tenantID),
 				slog.String("operation", operation),
-				slog.String("provider", result.Provider),
+				slog.String("integration", result.Integration),
 				slog.String("model", result.Model),
 				slog.String("delivery_job_id", deliveryJobID),
 				slog.String("event_id", event.EventID),
@@ -667,28 +669,28 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 				slog.Int("total_tokens", result.Usage.TotalTokens),
 			)
 		}
-		if connectorInstance.ConnectorName == resendconnector.ConnectorName && operation == resendconnector.OperationSendEmail {
+		if connectorInstance.IntegrationName == resend.IntegrationName && operation == resend.OperationSendEmail {
 			a.logger.Info("resend_send_email_completed",
 				slog.String("tenant_id", tenantID),
 				slog.String("delivery_job_id", deliveryJobID),
 				slog.String("event_id", event.EventID),
 			)
 		}
-		if connectorInstance.ConnectorName == slackconnector.ConnectorName && operation == slackconnector.OperationCreateThreadReply {
+		if connectorInstance.IntegrationName == slack.IntegrationName && operation == slack.OperationCreateThreadReply {
 			a.logger.Info("slack_thread_reply_created",
 				slog.String("tenant_id", tenantID),
 				slog.String("delivery_job_id", deliveryJobID),
 				slog.String("event_id", event.EventID),
 			)
 		}
-		if connectorInstance.ConnectorName == llmconnector.ConnectorName && operation == llmconnector.OperationClassify {
+		if connectorInstance.IntegrationName == llm.IntegrationName && operation == llm.OperationClassify {
 			a.logger.Info("llm_classify_completed",
 				slog.String("tenant_id", tenantID),
 				slog.String("delivery_job_id", deliveryJobID),
 				slog.String("event_id", event.EventID),
 			)
 		}
-		if connectorInstance.ConnectorName == llmconnector.ConnectorName && operation == llmconnector.OperationExtract {
+		if connectorInstance.IntegrationName == llm.IntegrationName && operation == llm.OperationExtract {
 			a.logger.Info("llm_extract_completed",
 				slog.String("tenant_id", tenantID),
 				slog.String("delivery_job_id", deliveryJobID),
@@ -696,33 +698,33 @@ func (a *Activities) ExecuteConnector(ctx context.Context, deliveryJobID string,
 			)
 		}
 	}
-	if connectorInstance.ConnectorName == llmconnector.ConnectorName && a.metrics != nil {
-		a.metrics.IncLLMRequests(result.Provider, operation)
-		a.metrics.ObserveLLMLatency(result.Provider, operation, time.Since(startedAt).Seconds())
+	if connectorInstance.IntegrationName == llm.IntegrationName && a.metrics != nil {
+		a.metrics.IncLLMRequests(result.Integration, operation)
+		a.metrics.ObserveLLMLatency(result.Integration, operation, time.Since(startedAt).Seconds())
 	}
 	if a.metrics != nil {
-		if connectorInstance.ConnectorName == resendconnector.ConnectorName && operation == resendconnector.OperationSendEmail {
+		if connectorInstance.IntegrationName == resend.IntegrationName && operation == resend.OperationSendEmail {
 			a.metrics.IncResendEmailsSent()
 		}
-		if connectorInstance.ConnectorName == slackconnector.ConnectorName && operation == slackconnector.OperationCreateThreadReply {
+		if connectorInstance.IntegrationName == slack.IntegrationName && operation == slack.OperationCreateThreadReply {
 			a.metrics.IncSlackThreadReplies()
 		}
-		if connectorInstance.ConnectorName == llmconnector.ConnectorName && operation == llmconnector.OperationClassify {
+		if connectorInstance.IntegrationName == llm.IntegrationName && operation == llm.OperationClassify {
 			a.metrics.IncLLMClassifications()
 		}
-		if connectorInstance.ConnectorName == llmconnector.ConnectorName && operation == llmconnector.OperationExtract {
+		if connectorInstance.IntegrationName == llm.IntegrationName && operation == llm.OperationExtract {
 			a.metrics.IncLLMExtractions()
 		}
 	}
-	return ConnectorResult{
-		ExternalID: result.ExternalID,
-		StatusCode: result.StatusCode,
-		Channel:    result.Channel,
-		Text:       result.Text,
-		Output:     result.Output,
-		Provider:   result.Provider,
-		Model:      result.Model,
-		Usage:      result.Usage,
+	return ConnectionResult{
+		ExternalID:  result.ExternalID,
+		StatusCode:  result.StatusCode,
+		Channel:     result.Channel,
+		Text:        result.Text,
+		Output:      result.Output,
+		Integration: result.Integration,
+		Model:       result.Model,
+		Usage:       result.Usage,
 	}, nil
 }
 
@@ -784,11 +786,12 @@ func (a *Activities) EmitResultEvent(ctx context.Context, req ResultEventRequest
 			Type:       req.InputEvent.Type,
 			Source:     req.InputEvent.Source,
 			SourceKind: req.InputEvent.SourceKind,
+			Lineage:    req.InputEvent.Lineage,
 			ChainDepth: req.InputEvent.ChainDepth,
 			Timestamp:  req.InputEvent.Timestamp,
 			Payload:    req.InputEvent.Payload,
 		},
-		Connector:      req.ConnectorName,
+		Integration:    req.IntegrationName,
 		Operation:      req.Operation,
 		Status:         req.Status,
 		Output:         output,
@@ -853,7 +856,7 @@ func (a *Activities) MarkDeadLetter(ctx context.Context, deliveryJobID string, l
 	if connectorName != "" && a.logger != nil {
 		a.logger.Info("connector_delivery_dead_letter",
 			slog.String("delivery_job_id", deliveryJobID),
-			slog.String("connector_name", connectorName),
+			slog.String("integration_name", connectorName),
 			slog.String("operation", operation),
 			slog.String("tenant_id", tenantID),
 			slog.String("event_id", eventID),
@@ -922,6 +925,11 @@ func optionalParsedUUID(value string) *uuid.UUID {
 	return &id
 }
 
+func uuidFromString(value string) uuid.UUID {
+	id, _ := uuid.Parse(value)
+	return id
+}
+
 func renderOperationParams(raw json.RawMessage, event Event) json.RawMessage {
 	if len(raw) == 0 {
 		return json.RawMessage(`{}`)
@@ -939,18 +947,17 @@ func renderOperationParams(raw json.RawMessage, event Event) json.RawMessage {
 }
 
 func buildTemplateReplacements(event Event) map[string]string {
-	replacements := map[string]string{
-		"{{event_id}}":  event.EventID,
-		"{{tenant_id}}": event.TenantID,
-		"{{type}}":      event.Type,
-		"{{source}}":    event.Source,
-		"{{timestamp}}": event.Timestamp.UTC().Format(time.RFC3339),
-	}
-	var payload any
-	if err := json.Unmarshal(event.Payload, &payload); err == nil {
-		collectPayloadReplacements(replacements, "payload", payload)
-	}
-	return replacements
+	return eventpkg.BuildTemplateReplacements(eventpkg.Event{
+		EventID:    uuidFromString(event.EventID),
+		TenantID:   uuidFromString(event.TenantID),
+		Type:       event.Type,
+		Source:     event.Source,
+		SourceKind: event.SourceKind,
+		Lineage:    event.Lineage,
+		ChainDepth: event.ChainDepth,
+		Timestamp:  event.Timestamp,
+		Payload:    event.Payload,
+	})
 }
 
 func renderTemplateValue(value any, replacements map[string]string) any {
@@ -975,25 +982,6 @@ func renderTemplateValue(value any, replacements map[string]string) any {
 		return rendered
 	default:
 		return value
-	}
-}
-
-func collectPayloadReplacements(replacements map[string]string, prefix string, value any) {
-	switch typed := value.(type) {
-	case map[string]any:
-		for key, nested := range typed {
-			collectPayloadReplacements(replacements, prefix+"."+key, nested)
-		}
-	case []any:
-		for i, nested := range typed {
-			collectPayloadReplacements(replacements, prefix+"."+strconv.Itoa(i), nested)
-		}
-	case string:
-		replacements["{{"+prefix+"}}"] = typed
-	case bool:
-		replacements["{{"+prefix+"}}"] = strconv.FormatBool(typed)
-	case float64:
-		replacements["{{"+prefix+"}}"] = strconv.FormatFloat(typed, 'f', -1, 64)
 	}
 }
 
@@ -1033,17 +1021,17 @@ func IsPermanentError(err error) bool {
 	return errors.As(err, &permanent)
 }
 
-func connectorErrorProvider(err error) string {
+func connectorErrorIntegration(err error) string {
 	if details, ok := activityFailure(err); ok {
-		return details.Provider
+		return details.Integration
 	}
 	var retryable outbound.RetryableError
 	if errors.As(err, &retryable) {
-		return retryable.Provider
+		return retryable.Integration
 	}
 	var permanent outbound.PermanentError
 	if errors.As(err, &permanent) {
-		return permanent.Provider
+		return permanent.Integration
 	}
 	return ""
 }
@@ -1078,17 +1066,17 @@ func wrapActivityError(err error) error {
 	var retryable outbound.RetryableError
 	if errors.As(err, &retryable) {
 		return temporal.NewApplicationErrorWithCause(err.Error(), deliveryRetryableErrorType, err, activityFailureDetails{
-			StatusCode: retryable.StatusCode,
-			Provider:   retryable.Provider,
-			Model:      retryable.Model,
+			StatusCode:  retryable.StatusCode,
+			Integration: retryable.Integration,
+			Model:       retryable.Model,
 		})
 	}
 	var permanent outbound.PermanentError
 	if errors.As(err, &permanent) {
 		return temporal.NewNonRetryableApplicationError(err.Error(), deliveryPermanentErrorType, err, activityFailureDetails{
-			StatusCode: permanent.StatusCode,
-			Provider:   permanent.Provider,
-			Model:      permanent.Model,
+			StatusCode:  permanent.StatusCode,
+			Integration: permanent.Integration,
+			Model:       permanent.Model,
 		})
 	}
 	return temporal.NewNonRetryableApplicationError(err.Error(), deliveryPermanentErrorType, err)

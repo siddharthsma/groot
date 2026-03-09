@@ -146,7 +146,7 @@ Must contain only:
 
 Must contain only:
 
-- connector instance persistence
+- connection persistence
 - connected app persistence if still present
 - connector config persistence helpers
 

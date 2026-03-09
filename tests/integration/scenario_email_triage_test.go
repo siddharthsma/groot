@@ -16,7 +16,7 @@ func TestScenarioEmailTriage(t *testing.T) {
 	h.Mocks.QueueLLMResponses("support")
 
 	tenantID, legacyKey := h.CreateTenant("phase20-email")
-	llmConnectorID := createGlobalLLMConnector(t, h)
+	llmConnectionID := createGlobalLLMConnection(t, h)
 
 	systemHeaders := make(http.Header)
 	systemHeaders.Set("Authorization", "Bearer system-secret")
@@ -27,20 +27,20 @@ func TestScenarioEmailTriage(t *testing.T) {
 	mustStatus(t, resp, body, http.StatusOK)
 	address := mustString(t, decodeBody(t, body)["address"])
 
-	resp, body = h.JSONRequest(http.MethodPost, "/connector-instances", bearerHeader(legacyKey), map[string]any{
-		"connector_name": "slack",
+	resp, body = h.JSONRequest(http.MethodPost, "/connections", bearerHeader(legacyKey), map[string]any{
+		"integration_name": "slack",
 		"config": map[string]any{
 			"bot_token":       "xoxb-phase20",
 			"default_channel": "C123",
 		},
 	})
 	mustStatus(t, resp, body, http.StatusOK)
-	slackConnectorID := mustString(t, decodeBody(t, body)["id"])
+	slackConnectionID := mustString(t, decodeBody(t, body)["id"])
 
 	resp, body = h.JSONRequest(http.MethodPost, "/subscriptions", bearerHeader(legacyKey), map[string]any{
-		"destination_type":      "connector",
-		"connector_instance_id": llmConnectorID,
-		"operation":             "classify",
+		"destination_type": "connection",
+		"connection_id":    llmConnectionID,
+		"operation":        "classify",
 		"operation_params": map[string]any{
 			"text":   "{{payload.subject}} {{payload.text}}",
 			"labels": []string{"support", "ignore"},
@@ -52,9 +52,9 @@ func TestScenarioEmailTriage(t *testing.T) {
 	mustStatus(t, resp, body, http.StatusCreated)
 
 	resp, body = h.JSONRequest(http.MethodPost, "/subscriptions", bearerHeader(legacyKey), map[string]any{
-		"destination_type":      "connector",
-		"connector_instance_id": slackConnectorID,
-		"operation":             "post_message",
+		"destination_type": "connection",
+		"connection_id":    slackConnectionID,
+		"operation":        "post_message",
 		"operation_params": map[string]any{
 			"text": "triaged {{payload.output.label}}",
 		},

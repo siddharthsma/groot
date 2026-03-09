@@ -20,11 +20,7 @@ import (
 	"groot/internal/apikey"
 	iauth "groot/internal/auth"
 	"groot/internal/connectedapp"
-	"groot/internal/connectorinstance"
-	"groot/internal/connectors/catalog"
-	"groot/internal/connectors/providers/resend"
-	slackconnector "groot/internal/connectors/providers/slack"
-	stripeconnector "groot/internal/connectors/providers/stripe"
+	"groot/internal/connection"
 	"groot/internal/delivery"
 	"groot/internal/edition"
 	eventpkg "groot/internal/event"
@@ -32,6 +28,10 @@ import (
 	"groot/internal/graph"
 	"groot/internal/inboundroute"
 	"groot/internal/ingest"
+	"groot/internal/integrations/catalog"
+	"groot/internal/integrations/resend"
+	"groot/internal/integrations/slack"
+	"groot/internal/integrations/stripe"
 	"groot/internal/observability"
 	"groot/internal/replay"
 	schemapkg "groot/internal/schema"
@@ -245,31 +245,31 @@ func (s stubReplayService) ReplayQuery(ctx context.Context, tenantID tenant.ID, 
 	return s.replayQueryFn(ctx, tenantID, req)
 }
 
-type stubConnectorInstanceService struct {
-	createFn      func(context.Context, *tenant.ID, string, string, json.RawMessage) (connectorinstance.Instance, error)
-	listFn        func(context.Context, tenant.ID) ([]connectorinstance.Instance, error)
-	listAllFn     func(context.Context) ([]connectorinstance.Instance, error)
-	adminListFn   func(context.Context, *tenant.ID, string, string) ([]connectorinstance.Instance, error)
-	adminUpsertFn func(context.Context, uuid.UUID, *tenant.ID, string, string, json.RawMessage) (connectorinstance.Instance, error)
+type stubConnectionService struct {
+	createFn      func(context.Context, *tenant.ID, string, string, json.RawMessage) (connection.Instance, error)
+	listFn        func(context.Context, tenant.ID) ([]connection.Instance, error)
+	listAllFn     func(context.Context) ([]connection.Instance, error)
+	adminListFn   func(context.Context, *tenant.ID, string, string) ([]connection.Instance, error)
+	adminUpsertFn func(context.Context, uuid.UUID, *tenant.ID, string, string, json.RawMessage) (connection.Instance, error)
 }
 
-func (s stubConnectorInstanceService) Create(ctx context.Context, tenantID *tenant.ID, connectorName string, scope string, config json.RawMessage) (connectorinstance.Instance, error) {
+func (s stubConnectionService) Create(ctx context.Context, tenantID *tenant.ID, connectorName string, scope string, config json.RawMessage) (connection.Instance, error) {
 	return s.createFn(ctx, tenantID, connectorName, scope, config)
 }
 
-func (s stubConnectorInstanceService) List(ctx context.Context, tenantID tenant.ID) ([]connectorinstance.Instance, error) {
+func (s stubConnectionService) List(ctx context.Context, tenantID tenant.ID) ([]connection.Instance, error) {
 	return s.listFn(ctx, tenantID)
 }
 
-func (s stubConnectorInstanceService) ListAll(ctx context.Context) ([]connectorinstance.Instance, error) {
+func (s stubConnectionService) ListAll(ctx context.Context) ([]connection.Instance, error) {
 	return s.listAllFn(ctx)
 }
 
-func (s stubConnectorInstanceService) AdminList(ctx context.Context, tenantID *tenant.ID, connectorName, scope string) ([]connectorinstance.Instance, error) {
+func (s stubConnectionService) AdminList(ctx context.Context, tenantID *tenant.ID, connectorName, scope string) ([]connection.Instance, error) {
 	return s.adminListFn(ctx, tenantID, connectorName, scope)
 }
 
-func (s stubConnectorInstanceService) AdminUpsert(ctx context.Context, id uuid.UUID, tenantID *tenant.ID, connectorName, scope string, config json.RawMessage) (connectorinstance.Instance, error) {
+func (s stubConnectionService) AdminUpsert(ctx context.Context, id uuid.UUID, tenantID *tenant.ID, connectorName, scope string, config json.RawMessage) (connection.Instance, error) {
 	return s.adminUpsertFn(ctx, id, tenantID, connectorName, scope, config)
 }
 
@@ -313,7 +313,7 @@ type stubStripeService struct {
 }
 
 type stubSlackService struct {
-	handleEventsFn func(context.Context, []byte, http.Header) (slackconnector.Result, error)
+	handleEventsFn func(context.Context, []byte, http.Header) (slack.Result, error)
 }
 
 type stubSchemaService struct {
@@ -321,9 +321,9 @@ type stubSchemaService struct {
 	getFn  func(context.Context, string) (schemapkg.Schema, error)
 }
 
-type stubProviderCatalogService struct {
-	listFn           func(context.Context) ([]catalog.ProviderSummary, error)
-	getFn            func(context.Context, string) (catalog.ProviderDetail, error)
+type stubIntegrationCatalogService struct {
+	listFn           func(context.Context) ([]catalog.IntegrationSummary, error)
+	getFn            func(context.Context, string) (catalog.IntegrationDetail, error)
 	listOperationsFn func(context.Context, string) ([]catalog.OperationCatalog, error)
 	listSchemasFn    func(context.Context, string) ([]catalog.SchemaCatalog, error)
 	getConfigFn      func(context.Context, string) (catalog.ConfigCatalog, error)
@@ -346,7 +346,7 @@ func (s stubStripeService) HandleWebhook(ctx context.Context, rawBody []byte, he
 	return s.webhookFn(ctx, rawBody, headers)
 }
 
-func (s stubSlackService) HandleEvents(ctx context.Context, rawBody []byte, headers http.Header) (slackconnector.Result, error) {
+func (s stubSlackService) HandleEvents(ctx context.Context, rawBody []byte, headers http.Header) (slack.Result, error) {
 	return s.handleEventsFn(ctx, rawBody, headers)
 }
 
@@ -358,23 +358,23 @@ func (s stubSchemaService) Get(ctx context.Context, fullName string) (schemapkg.
 	return s.getFn(ctx, fullName)
 }
 
-func (s stubProviderCatalogService) List(ctx context.Context) ([]catalog.ProviderSummary, error) {
+func (s stubIntegrationCatalogService) List(ctx context.Context) ([]catalog.IntegrationSummary, error) {
 	return s.listFn(ctx)
 }
 
-func (s stubProviderCatalogService) Get(ctx context.Context, name string) (catalog.ProviderDetail, error) {
+func (s stubIntegrationCatalogService) Get(ctx context.Context, name string) (catalog.IntegrationDetail, error) {
 	return s.getFn(ctx, name)
 }
 
-func (s stubProviderCatalogService) ListOperations(ctx context.Context, name string) ([]catalog.OperationCatalog, error) {
+func (s stubIntegrationCatalogService) ListOperations(ctx context.Context, name string) ([]catalog.OperationCatalog, error) {
 	return s.listOperationsFn(ctx, name)
 }
 
-func (s stubProviderCatalogService) ListSchemas(ctx context.Context, name string) ([]catalog.SchemaCatalog, error) {
+func (s stubIntegrationCatalogService) ListSchemas(ctx context.Context, name string) ([]catalog.SchemaCatalog, error) {
 	return s.listSchemasFn(ctx, name)
 }
 
-func (s stubProviderCatalogService) GetConfig(ctx context.Context, name string) (catalog.ConfigCatalog, error) {
+func (s stubIntegrationCatalogService) GetConfig(ctx context.Context, name string) (catalog.ConfigCatalog, error) {
 	return s.getConfigFn(ctx, name)
 }
 
@@ -649,7 +649,14 @@ func TestCreateEvent(t *testing.T) {
 				if string(req.Payload) != `{"ok":true}` {
 					t.Fatalf("req.Payload = %s", req.Payload)
 				}
-				return eventpkg.Event{EventID: eventID, TenantID: tenantID, Type: req.Type, Source: req.Source, Payload: json.RawMessage(`{"ok":true}`)}, nil
+				return eventpkg.Event{
+					EventID:    eventID,
+					TenantID:   tenantID,
+					Type:       req.Type,
+					Source:     eventpkg.Source{Kind: eventpkg.SourceKindExternal, Integration: req.SourceInfo.Integration},
+					SourceKind: eventpkg.SourceKindExternal,
+					Payload:    json.RawMessage(`{"ok":true}`),
+				}, nil
 			},
 		},
 	})
@@ -717,7 +724,7 @@ func TestCreateSubscriptionAppNotFound(t *testing.T) {
 
 func TestCreateSubscriptionReturnsWarnings(t *testing.T) {
 	tenantID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
-	req := httptest.NewRequest(http.MethodPost, "/subscriptions", bytes.NewBufferString(`{"destination_type":"connector","connector_instance_id":"33333333-3333-3333-3333-333333333333","operation":"post_message","operation_params":{"text":"hello"},"event_type":"example.event.v1","filter":{"path":"payload.currency","op":"==","value":"usd"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/subscriptions", bytes.NewBufferString(`{"destination_type":"connection","connection_id":"33333333-3333-3333-3333-333333333333","operation":"post_message","operation_params":{"text":"hello"},"event_type":"example.event.v1","filter":{"path":"payload.currency","op":"==","value":"usd"}}`))
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 
@@ -748,7 +755,7 @@ func TestCreateSubscriptionReturnsWarnings(t *testing.T) {
 func TestReplaceSubscription(t *testing.T) {
 	tenantID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
 	subscriptionID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
-	req := httptest.NewRequest(http.MethodPut, "/subscriptions/"+subscriptionID.String(), bytes.NewBufferString(`{"destination_type":"connector","connector_instance_id":"44444444-4444-4444-4444-444444444444","operation":"post_message","operation_params":{"text":"hello"},"event_type":"example.event.v1","filter":{"path":"payload.currency","op":"==","value":"usd"}}`))
+	req := httptest.NewRequest(http.MethodPut, "/subscriptions/"+subscriptionID.String(), bytes.NewBufferString(`{"destination_type":"connection","connection_id":"44444444-4444-4444-4444-444444444444","operation":"post_message","operation_params":{"text":"hello"},"event_type":"example.event.v1","filter":{"path":"payload.currency","op":"==","value":"usd"}}`))
 	req.SetPathValue("subscription_id", subscriptionID.String())
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
@@ -827,9 +834,9 @@ func TestCreateFunctionDestination(t *testing.T) {
 	}
 }
 
-func TestCreateConnectorInstance(t *testing.T) {
+func TestCreateConnection(t *testing.T) {
 	tenantID := uuid.MustParse("22222222-2222-2222-2222-222222222222")
-	req := httptest.NewRequest(http.MethodPost, "/connector-instances", bytes.NewBufferString(`{"connector_name":"slack","config":{"bot_token":"xoxb-test"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/connections", bytes.NewBufferString(`{"integration_name":"slack","config":{"bot_token":"xoxb-test"}}`))
 	req.Header.Set("Authorization", "Bearer secret")
 	rec := httptest.NewRecorder()
 
@@ -838,12 +845,12 @@ func TestCreateConnectorInstance(t *testing.T) {
 		Tenants: stubTenantService{
 			authenticateFn: func(context.Context, string) (tenant.Tenant, error) { return tenant.Tenant{ID: tenantID}, nil },
 		},
-		ConnectorInstances: stubConnectorInstanceService{
-			createFn: func(_ context.Context, gotTenantID *tenant.ID, connectorName string, scope string, config json.RawMessage) (connectorinstance.Instance, error) {
+		Connections: stubConnectionService{
+			createFn: func(_ context.Context, gotTenantID *tenant.ID, connectorName string, scope string, config json.RawMessage) (connection.Instance, error) {
 				if gotTenantID == nil || *gotTenantID != tenantID || connectorName != "slack" || scope != "" || !strings.Contains(string(config), "xoxb-test") {
-					t.Fatal("unexpected connector instance args")
+					t.Fatal("unexpected connection args")
 				}
-				return connectorinstance.Instance{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), ConnectorName: connectorName, Scope: connectorinstance.ScopeTenant}, nil
+				return connection.Instance{ID: uuid.MustParse("44444444-4444-4444-4444-444444444444"), IntegrationName: connectorName, Scope: connection.ScopeTenant}, nil
 			},
 		},
 	})
@@ -979,7 +986,7 @@ func TestStripeEnableConflict(t *testing.T) {
 		},
 		Stripe: stubStripeService{
 			enableFn: func(context.Context, tenant.ID, string, string) (uuid.UUID, error) {
-				return uuid.Nil, stripeconnector.ErrRouteConflict
+				return uuid.Nil, stripe.ErrRouteConflict
 			},
 		},
 	})
@@ -998,7 +1005,7 @@ func TestStripeWebhookUnauthorized(t *testing.T) {
 		Logger: testLogger(),
 		Stripe: stubStripeService{
 			webhookFn: func(context.Context, []byte, http.Header) error {
-				return stripeconnector.ErrUnauthorized
+				return stripe.ErrUnauthorized
 			},
 		},
 	})
@@ -1016,11 +1023,11 @@ func TestSlackWebhookChallenge(t *testing.T) {
 	handler := NewHandler(Options{
 		Logger: testLogger(),
 		Slack: stubSlackService{
-			handleEventsFn: func(_ context.Context, rawBody []byte, _ http.Header) (slackconnector.Result, error) {
+			handleEventsFn: func(_ context.Context, rawBody []byte, _ http.Header) (slack.Result, error) {
 				if !strings.Contains(string(rawBody), `"challenge":"abc123"`) {
 					t.Fatalf("rawBody = %s", rawBody)
 				}
-				return slackconnector.Result{IsChallenge: true, Challenge: "abc123"}, nil
+				return slack.Result{IsChallenge: true, Challenge: "abc123"}, nil
 			},
 		},
 	})
@@ -1041,11 +1048,11 @@ func TestSlackWebhookOK(t *testing.T) {
 	handler := NewHandler(Options{
 		Logger: testLogger(),
 		Slack: stubSlackService{
-			handleEventsFn: func(_ context.Context, rawBody []byte, _ http.Header) (slackconnector.Result, error) {
+			handleEventsFn: func(_ context.Context, rawBody []byte, _ http.Header) (slack.Result, error) {
 				if !strings.Contains(string(rawBody), `"team_id":"T123"`) {
 					t.Fatalf("rawBody = %s", rawBody)
 				}
-				return slackconnector.Result{}, nil
+				return slack.Result{}, nil
 			},
 		},
 	})
@@ -1103,15 +1110,15 @@ func TestGetSchema(t *testing.T) {
 	}
 }
 
-func TestListProviders(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/providers", nil)
+func TestListIntegrations(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/integrations", nil)
 	rec := httptest.NewRecorder()
 
 	NewHandler(Options{
 		Logger: testLogger(),
-		ProviderCatalog: stubProviderCatalogService{
-			listFn: func(context.Context) ([]catalog.ProviderSummary, error) {
-				return []catalog.ProviderSummary{{
+		IntegrationCatalog: stubIntegrationCatalogService{
+			listFn: func(context.Context) ([]catalog.IntegrationSummary, error) {
+				return []catalog.IntegrationSummary{{
 					Name:                "slack",
 					SupportsTenantScope: true,
 					SupportsGlobalScope: true,
@@ -1131,13 +1138,13 @@ func TestListProviders(t *testing.T) {
 	}
 }
 
-func TestGetProviderConfig(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/providers/slack/config", nil)
+func TestGetIntegrationConfig(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/integrations/slack/config", nil)
 	rec := httptest.NewRecorder()
 
 	NewHandler(Options{
 		Logger: testLogger(),
-		ProviderCatalog: stubProviderCatalogService{
+		IntegrationCatalog: stubIntegrationCatalogService{
 			getConfigFn: func(context.Context, string) (catalog.ConfigCatalog, error) {
 				return catalog.ConfigCatalog{
 					Fields: []catalog.ConfigFieldCatalog{{
@@ -1161,15 +1168,15 @@ func TestGetProviderConfig(t *testing.T) {
 	}
 }
 
-func TestGetProviderNotFound(t *testing.T) {
-	req := httptest.NewRequest(http.MethodGet, "/providers/nope", nil)
+func TestGetIntegrationNotFound(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/integrations/nope", nil)
 	rec := httptest.NewRecorder()
 
 	NewHandler(Options{
 		Logger: testLogger(),
-		ProviderCatalog: stubProviderCatalogService{
-			getFn: func(context.Context, string) (catalog.ProviderDetail, error) {
-				return catalog.ProviderDetail{}, sql.ErrNoRows
+		IntegrationCatalog: stubIntegrationCatalogService{
+			getFn: func(context.Context, string) (catalog.IntegrationDetail, error) {
+				return catalog.IntegrationDetail{}, sql.ErrNoRows
 			},
 		},
 	}).ServeHTTP(rec, req)

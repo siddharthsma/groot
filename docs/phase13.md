@@ -260,7 +260,7 @@ Parameters:
 text (required)  
 labels (required array)  
 model (optional)  
-provider (optional)
+integration (optional)
 
 Example:
 
@@ -305,7 +305,7 @@ Parameters:
 text (required)  
 schema (required JSON schema)  
 model (optional)  
-provider (optional)
+integration (optional)
 
 Prompt template:
 

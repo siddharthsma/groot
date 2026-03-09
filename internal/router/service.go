@@ -45,9 +45,10 @@ func NewConsumer(brokers []string, groupID string, store Store, logger *slog.Log
 	}
 	return &Consumer{
 		reader: kafka.NewReader(kafka.ReaderConfig{
-			Brokers: brokers,
-			Topic:   stream.EventsTopic,
-			GroupID: groupID,
+			Brokers:     brokers,
+			Topic:       stream.EventsTopic,
+			GroupID:     groupID,
+			StartOffset: kafka.LastOffset,
 		}),
 		store:   store,
 		logger:  logger,
@@ -100,7 +101,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error 
 		c.metrics.IncRouterEventsConsumed()
 	}
 
-	matches, err := c.store.ListMatchingSubscriptions(ctx, event.TenantID, event.Type, event.Source)
+	matches, err := c.store.ListMatchingSubscriptions(ctx, event.TenantID, event.Type, event.SourceIntegration())
 	if err != nil {
 		return fmt.Errorf("list matching subscriptions: %w", err)
 	}
@@ -110,7 +111,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error 
 			if c.metrics != nil {
 				c.metrics.IncSubscriptionFilterEvaluations()
 			}
-			matched, err := subscriptionfilter.Evaluate(sub.Filter, event.Payload)
+			matched, err := subscriptionfilter.Evaluate(sub.Filter, event)
 			if err != nil {
 				if c.metrics != nil {
 					c.metrics.IncSubscriptionFilterRejections()

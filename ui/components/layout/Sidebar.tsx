@@ -4,7 +4,8 @@ import { Badge } from "@/components/ui/badge";
 
 const items = [
   { href: "/", label: "Overview", icon: Workflow },
-  { href: "/providers", label: "Providers", icon: Boxes },
+  { href: "/integrations", label: "Integrations", icon: Boxes },
+  { href: "/connections", label: "Connections", icon: Boxes },
   { href: "/events", label: "Events", icon: Cable },
   { href: "/agents", label: "Agents", icon: Bot },
 ];
@@ -22,7 +23,7 @@ export function Sidebar() {
           </h1>
         </div>
         <Badge variant="secondary" className="border border-slate-200 bg-slate-50">
-          Phase 31
+          Phase 32
         </Badge>
       </div>
       <nav className="mt-8 space-y-2">

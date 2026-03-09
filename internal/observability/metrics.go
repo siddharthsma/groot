@@ -126,14 +126,14 @@ func (m *Metrics) IncNotionActions()         { m.notionActions.Add(1) }
 func (m *Metrics) IncNotionActionFailures()  { m.notionActionFailures.Add(1) }
 func (m *Metrics) IncLLMClassifications()    { m.llmClassifications.Add(1) }
 func (m *Metrics) IncLLMExtractions()        { m.llmExtractions.Add(1) }
-func (m *Metrics) IncLLMRequests(provider, operation string) {
-	m.incLabelled(m.llmRequests, provider, operation)
+func (m *Metrics) IncLLMRequests(integration, operation string) {
+	m.incLabelled(m.llmRequests, integration, operation)
 }
-func (m *Metrics) IncLLMFailures(provider string) {
-	m.incLabelled(m.llmFailures, provider, "")
+func (m *Metrics) IncLLMFailures(integration string) {
+	m.incLabelled(m.llmFailures, integration, "")
 }
-func (m *Metrics) ObserveLLMLatency(provider, operation string, seconds float64) {
-	key := provider + "|" + operation
+func (m *Metrics) ObserveLLMLatency(integration, operation string, seconds float64) {
+	key := integration + "|" + operation
 	m.mu.Lock()
 	buckets := m.llmLatencyBuckets[key]
 	if buckets == nil {
@@ -214,12 +214,12 @@ func (m *Metrics) IncConnectorDeliveryDeadLetter(connector, operation string) {
 	m.incLabelled(m.connectorDeliveryDeadLetter, connector, operation)
 }
 
-func (m *Metrics) IncInboundRoutes(connector string) {
-	m.incLabelled(m.inboundRoutes, connector, "")
+func (m *Metrics) IncInboundRoutes(integration string) {
+	m.incLabelled(m.inboundRoutes, integration, "")
 }
 
-func (m *Metrics) IncInboundUnroutable(connector string) {
-	m.incLabelled(m.inboundUnroutable, connector, "")
+func (m *Metrics) IncInboundUnroutable(integration string) {
+	m.incLabelled(m.inboundUnroutable, integration, "")
 }
 
 func (m *Metrics) IncGlobalConnectorDeliveries(connector, operation string) {
@@ -277,8 +277,8 @@ func (m *Metrics) Prometheus() string {
 	lines = append(lines, m.labelledPrometheus("groot_inbound_routes_total", m.snapshot(m.inboundRoutes))...)
 	lines = append(lines, m.labelledPrometheus("groot_inbound_unroutable_total", m.snapshot(m.inboundUnroutable))...)
 	lines = append(lines, m.labelledPrometheus("groot_global_connector_deliveries_total", m.snapshot(m.globalConnectorDeliveries))...)
-	lines = append(lines, m.providerOperationPrometheus("groot_llm_requests_total", m.snapshot(m.llmRequests))...)
-	lines = append(lines, m.providerPrometheus("groot_llm_failures_total", m.snapshot(m.llmFailures))...)
+	lines = append(lines, m.integrationOperationPrometheus("groot_llm_requests_total", m.snapshot(m.llmRequests))...)
+	lines = append(lines, m.integrationPrometheus("groot_llm_failures_total", m.snapshot(m.llmFailures))...)
 	lines = append(lines, m.resultEventPrometheus("groot_result_events_emitted_total", m.snapshot(m.resultEventsEmitted))...)
 	lines = append(lines, m.llmLatencyPrometheus()...)
 	if info, ok := m.editionInfo.Load().(EditionInfo); ok && info.Edition != "" {
@@ -290,8 +290,8 @@ func (m *Metrics) Prometheus() string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func (m *Metrics) incLabelled(target map[string]uint64, connector, operation string) {
-	key := connector + "|" + operation
+func (m *Metrics) incLabelled(target map[string]uint64, integration, operation string) {
+	key := integration + "|" + operation
 	m.mu.Lock()
 	target[key]++
 	m.mu.Unlock()
@@ -325,19 +325,19 @@ func (m *Metrics) llmLatencyPrometheus() []string {
 	lines := make([]string, 0, len(keys)*(len(llmLatencyBounds)+3))
 	for _, key := range keys {
 		parts := strings.SplitN(key, "|", 2)
-		provider, operation := parts[0], ""
+		integration, operation := parts[0], ""
 		if len(parts) == 2 {
 			operation = parts[1]
 		}
 		cumulative := uint64(0)
 		for i, bound := range llmLatencyBounds {
 			cumulative += m.llmLatencyBuckets[key][i]
-			lines = append(lines, fmt.Sprintf("groot_llm_latency_seconds_bucket{provider=%q,operation=%q,le=%q} %d", provider, operation, strconv.FormatFloat(bound, 'f', -1, 64), cumulative))
+			lines = append(lines, fmt.Sprintf("groot_llm_latency_seconds_bucket{integration=%q,operation=%q,le=%q} %d", integration, operation, strconv.FormatFloat(bound, 'f', -1, 64), cumulative))
 		}
 		cumulative += m.llmLatencyBuckets[key][len(llmLatencyBounds)]
-		lines = append(lines, fmt.Sprintf("groot_llm_latency_seconds_bucket{provider=%q,operation=%q,le=%q} %d", provider, operation, "+Inf", cumulative))
-		lines = append(lines, fmt.Sprintf("groot_llm_latency_seconds_sum{provider=%q,operation=%q} %g", provider, operation, m.llmLatencySum[key]))
-		lines = append(lines, fmt.Sprintf("groot_llm_latency_seconds_count{provider=%q,operation=%q} %d", provider, operation, m.llmLatencyCount[key]))
+		lines = append(lines, fmt.Sprintf("groot_llm_latency_seconds_bucket{integration=%q,operation=%q,le=%q} %d", integration, operation, "+Inf", cumulative))
+		lines = append(lines, fmt.Sprintf("groot_llm_latency_seconds_sum{integration=%q,operation=%q} %g", integration, operation, m.llmLatencySum[key]))
+		lines = append(lines, fmt.Sprintf("groot_llm_latency_seconds_count{integration=%q,operation=%q} %d", integration, operation, m.llmLatencyCount[key]))
 	}
 	return lines
 }
@@ -351,16 +351,16 @@ func (m *Metrics) labelledPrometheus(metricName string, values map[string]uint64
 	lines := make([]string, 0, len(keys))
 	for _, key := range keys {
 		parts := strings.SplitN(key, "|", 2)
-		connector, operation := parts[0], ""
+		integration, operation := parts[0], ""
 		if len(parts) == 2 {
 			operation = parts[1]
 		}
-		lines = append(lines, fmt.Sprintf("%s{connector=%q,operation=%q} %d", metricName, connector, operation, values[key]))
+		lines = append(lines, fmt.Sprintf("%s{integration=%q,operation=%q} %d", metricName, integration, operation, values[key]))
 	}
 	return lines
 }
 
-func (m *Metrics) providerPrometheus(metricName string, values map[string]uint64) []string {
+func (m *Metrics) integrationPrometheus(metricName string, values map[string]uint64) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -368,13 +368,13 @@ func (m *Metrics) providerPrometheus(metricName string, values map[string]uint64
 	sort.Strings(keys)
 	lines := make([]string, 0, len(keys))
 	for _, key := range keys {
-		provider := strings.SplitN(key, "|", 2)[0]
-		lines = append(lines, fmt.Sprintf("%s{provider=%q} %d", metricName, provider, values[key]))
+		integration := strings.SplitN(key, "|", 2)[0]
+		lines = append(lines, fmt.Sprintf("%s{integration=%q} %d", metricName, integration, values[key]))
 	}
 	return lines
 }
 
-func (m *Metrics) providerOperationPrometheus(metricName string, values map[string]uint64) []string {
+func (m *Metrics) integrationOperationPrometheus(metricName string, values map[string]uint64) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -383,11 +383,11 @@ func (m *Metrics) providerOperationPrometheus(metricName string, values map[stri
 	lines := make([]string, 0, len(keys))
 	for _, key := range keys {
 		parts := strings.SplitN(key, "|", 2)
-		provider, operation := parts[0], ""
+		integration, operation := parts[0], ""
 		if len(parts) == 2 {
 			operation = parts[1]
 		}
-		lines = append(lines, fmt.Sprintf("%s{provider=%q,operation=%q} %d", metricName, provider, operation, values[key]))
+		lines = append(lines, fmt.Sprintf("%s{integration=%q,operation=%q} %d", metricName, integration, operation, values[key]))
 	}
 	return lines
 }
@@ -401,9 +401,9 @@ func (m *Metrics) resultEventPrometheus(metricName string, values map[string]uin
 	lines := make([]string, 0, len(keys))
 	for _, key := range keys {
 		parts := strings.SplitN(key, "|", 3)
-		connector, operation, status := "", "", ""
+		integration, operation, status := "", "", ""
 		if len(parts) > 0 {
-			connector = parts[0]
+			integration = parts[0]
 		}
 		if len(parts) > 1 {
 			operation = parts[1]
@@ -411,7 +411,7 @@ func (m *Metrics) resultEventPrometheus(metricName string, values map[string]uin
 		if len(parts) > 2 {
 			status = parts[2]
 		}
-		lines = append(lines, fmt.Sprintf("%s{connector=%q,operation=%q,status=%q} %d", metricName, connector, operation, status, values[key]))
+		lines = append(lines, fmt.Sprintf("%s{integration=%q,operation=%q,status=%q} %d", metricName, integration, operation, status, values[key]))
 	}
 	return lines
 }

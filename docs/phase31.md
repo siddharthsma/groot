@@ -104,7 +104,7 @@ ui/
     forms/
     graphs/
     tables/
-    providers/
+    integrations/
     agents/
     events/
 
@@ -225,13 +225,13 @@ Create:
 
 ```
 ui/lib/query/client.ts
-ui/lib/query/provider.tsx
+ui/lib/query/integration.tsx
 ```
 
 Requirements:
 
 - single QueryClient instance
-- provider mounted at app root
+- integration mounted at app root
 
 ---
 
@@ -320,7 +320,7 @@ Create placeholder pages:
 
 ```
 /app/page.tsx
-/app/providers/page.tsx
+/app/integrations/page.tsx
 /app/events/page.tsx
 /app/agents/page.tsx
 ```
@@ -404,7 +404,7 @@ Add sections describing:
 
 Phase 31 does NOT implement:
 
-- provider marketplace UI
+- integration marketplace UI
 - agent studio
 - workflow builder
 - event graph explorer

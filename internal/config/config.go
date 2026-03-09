@@ -11,38 +11,38 @@ import (
 )
 
 type Config struct {
-	HTTPAddr                string
-	Edition                 edition.Runtime
-	License                 edition.LicenseConfig
-	CommunityTenantName     string
-	ProviderPluginDir       string
-	ProviderTrustedKeysPath string
-	ProviderInstalledPath   string
-	ProviderCacheDir        string
-	ProviderRegistryURL     string
-	PostgresDSN             string
-	KafkaBrokers            []string
-	RouterConsumerGroup     string
-	TemporalAddress         string
-	TemporalNamespace       string
-	DeliveryTaskQueue       string
-	Auth                    AuthConfig
-	Admin                   AdminConfig
-	Audit                   AuditConfig
-	DeliveryRetry           DeliveryRetryConfig
-	Agent                   AgentConfig
-	AgentRuntime            AgentRuntimeConfig
-	Replay                  ReplayConfig
-	MaxChainDepth           int
-	AllowGlobalInstances    bool
-	SystemAPIKey            string
-	Stripe                  StripeConfig
-	Resend                  ResendConfig
-	Slack                   SlackConfig
-	Notion                  NotionConfig
-	LLM                     LLMConfig
-	Schema                  SchemaConfig
-	Graph                   GraphConfig
+	HTTPAddr                   string
+	Edition                    edition.Runtime
+	License                    edition.LicenseConfig
+	CommunityTenantName        string
+	IntegrationPluginDir       string
+	IntegrationTrustedKeysPath string
+	IntegrationInstalledPath   string
+	IntegrationCacheDir        string
+	IntegrationRegistryURL     string
+	PostgresDSN                string
+	KafkaBrokers               []string
+	RouterConsumerGroup        string
+	TemporalAddress            string
+	TemporalNamespace          string
+	DeliveryTaskQueue          string
+	Auth                       AuthConfig
+	Admin                      AdminConfig
+	Audit                      AuditConfig
+	DeliveryRetry              DeliveryRetryConfig
+	Agent                      AgentConfig
+	AgentRuntime               AgentRuntimeConfig
+	Replay                     ReplayConfig
+	MaxChainDepth              int
+	AllowGlobalInstances       bool
+	SystemAPIKey               string
+	Stripe                     StripeConfig
+	Resend                     ResendConfig
+	Slack                      SlackConfig
+	Notion                     NotionConfig
+	LLM                        LLMConfig
+	Schema                     SchemaConfig
+	Graph                      GraphConfig
 }
 
 type DeliveryRetryConfig struct {
@@ -97,7 +97,7 @@ type LLMConfig struct {
 	OpenAIAPIBaseURL     string
 	AnthropicAPIKey      string
 	AnthropicAPIBaseURL  string
-	DefaultProvider      string
+	DefaultIntegration   string
 	DefaultClassifyModel string
 	DefaultExtractModel  string
 	TimeoutSeconds       int
@@ -165,23 +165,23 @@ func Load() (Config, error) {
 	}
 	cfg.License = loadLicenseConfig()
 	cfg.CommunityTenantName = strings.TrimSpace(os.Getenv("COMMUNITY_TENANT_NAME"))
-	cfg.ProviderPluginDir = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_PLUGIN_DIR"))
-	if cfg.ProviderPluginDir == "" {
-		cfg.ProviderPluginDir = "providers/plugins"
+	cfg.IntegrationPluginDir = strings.TrimSpace(os.Getenv("GROOT_INTEGRATION_PLUGIN_DIR"))
+	if cfg.IntegrationPluginDir == "" {
+		cfg.IntegrationPluginDir = "integrations/plugins"
 	}
-	cfg.ProviderTrustedKeysPath = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_TRUSTED_KEYS_PATH"))
-	if cfg.ProviderTrustedKeysPath == "" {
-		cfg.ProviderTrustedKeysPath = "providers/trusted_keys.json"
+	cfg.IntegrationTrustedKeysPath = strings.TrimSpace(os.Getenv("GROOT_INTEGRATION_TRUSTED_KEYS_PATH"))
+	if cfg.IntegrationTrustedKeysPath == "" {
+		cfg.IntegrationTrustedKeysPath = "integrations/trusted_keys.json"
 	}
-	cfg.ProviderInstalledPath = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_INSTALLED_PATH"))
-	if cfg.ProviderInstalledPath == "" {
-		cfg.ProviderInstalledPath = "providers/installed.json"
+	cfg.IntegrationInstalledPath = strings.TrimSpace(os.Getenv("GROOT_INTEGRATION_INSTALLED_PATH"))
+	if cfg.IntegrationInstalledPath == "" {
+		cfg.IntegrationInstalledPath = "integrations/installed.json"
 	}
-	cfg.ProviderCacheDir = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_CACHE_DIR"))
-	if cfg.ProviderCacheDir == "" {
-		cfg.ProviderCacheDir = "providers/cache"
+	cfg.IntegrationCacheDir = strings.TrimSpace(os.Getenv("GROOT_INTEGRATION_CACHE_DIR"))
+	if cfg.IntegrationCacheDir == "" {
+		cfg.IntegrationCacheDir = "integrations/cache"
 	}
-	cfg.ProviderRegistryURL = strings.TrimSpace(os.Getenv("GROOT_PROVIDER_REGISTRY_URL"))
+	cfg.IntegrationRegistryURL = strings.TrimSpace(os.Getenv("GROOT_INTEGRATION_REGISTRY_URL"))
 	if cfg.HTTPAddr, err = requiredEnv("GROOT_HTTP_ADDR"); err != nil {
 		return Config{}, err
 	}
@@ -586,9 +586,9 @@ func loadLLMConfig() LLMConfig {
 	if anthropicBaseURL == "" {
 		anthropicBaseURL = "https://api.anthropic.com"
 	}
-	defaultProvider := strings.TrimSpace(os.Getenv("LLM_DEFAULT_PROVIDER"))
-	if defaultProvider == "" {
-		defaultProvider = "openai"
+	defaultIntegration := strings.TrimSpace(os.Getenv("LLM_DEFAULT_PROVIDER"))
+	if defaultIntegration == "" {
+		defaultIntegration = "openai"
 	}
 	defaultClassifyModel := strings.TrimSpace(os.Getenv("LLM_DEFAULT_CLASSIFY_MODEL"))
 	defaultExtractModel := strings.TrimSpace(os.Getenv("LLM_DEFAULT_EXTRACT_MODEL"))
@@ -601,7 +601,7 @@ func loadLLMConfig() LLMConfig {
 		OpenAIAPIBaseURL:     openAIBaseURL,
 		AnthropicAPIKey:      strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")),
 		AnthropicAPIBaseURL:  anthropicBaseURL,
-		DefaultProvider:      defaultProvider,
+		DefaultIntegration:   defaultIntegration,
 		DefaultClassifyModel: defaultClassifyModel,
 		DefaultExtractModel:  defaultExtractModel,
 		TimeoutSeconds:       timeoutSeconds,

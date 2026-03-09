@@ -49,7 +49,7 @@ Create migration:
 
 migrations/006_resend_connector.sql
 
-## Connector Instances
+## Connections
 
 CREATE TABLE connector_instances ( id UUID PRIMARY KEY, tenant_id UUID
 NOT NULL REFERENCES tenants(id), connector_name TEXT NOT NULL, status
@@ -132,7 +132,7 @@ Auth: tenant
 
 Steps:
 
-1.  Ensure connector instance exists.
+1.  Ensure connection exists.
 2.  Generate random token.
 3.  Store token -\> tenant mapping.
 4.  Return receiving address:

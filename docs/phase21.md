@@ -75,7 +75,7 @@ Groot must not embed Strands directly in the Go process.
 A durable configuration object describing:
 
 - instructions/system prompt
-- provider/model defaults
+- integration/model defaults
 - allowed tools
 - session behavior
 - memory behavior
@@ -138,7 +138,7 @@ CREATE TABLE agents (
   name TEXT NOT NULL,
   instructions TEXT NOT NULL,
 
-  provider TEXT,
+  integration TEXT,
   model TEXT,
 
   allowed_tools JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -335,7 +335,7 @@ Timeout:
   "session_key": "string",
 
   "instructions": "string",
-  "provider": "optional",
+  "integration": "optional",
   "model": "optional",
 
   "allowed_tools": ["slack.post_message", "notify_support"],
@@ -500,7 +500,7 @@ Request:
 {
   "name": "task_chaser",
   "instructions": "Follow up on open Salesforce tasks.",
-  "provider": "openai",
+  "integration": "openai",
   "model": "gpt-4o-mini",
   "allowed_tools": ["resend.send_email", "salesforce.update_task"],
   "tool_bindings": {}

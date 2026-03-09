@@ -3,7 +3,7 @@ CREATE TABLE IF NOT EXISTS agents (
   tenant_id UUID NOT NULL REFERENCES tenants(id),
   name TEXT NOT NULL,
   instructions TEXT NOT NULL,
-  provider TEXT,
+  integration TEXT,
   model TEXT,
   allowed_tools JSONB NOT NULL DEFAULT '[]'::jsonb,
   tool_bindings JSONB NOT NULL DEFAULT '{}'::jsonb,

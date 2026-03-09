@@ -9,8 +9,8 @@ import (
 )
 
 const (
-	BindingTypeConnector = "connector"
-	BindingTypeFunction  = "function"
+	BindingTypeConnection = "connection"
+	BindingTypeFunction   = "function"
 )
 
 type Config struct {
@@ -18,7 +18,7 @@ type Config struct {
 	AllowedTools []string               `json:"allowed_tools"`
 	MaxSteps     int                    `json:"max_steps,omitempty"`
 	Model        string                 `json:"model,omitempty"`
-	Provider     string                 `json:"provider,omitempty"`
+	Integration  string                 `json:"integration,omitempty"`
 	Temperature  *float64               `json:"temperature,omitempty"`
 	MaxTokens    *int                   `json:"max_tokens,omitempty"`
 	ToolBindings map[string]ToolBinding `json:"tool_bindings,omitempty"`
@@ -26,7 +26,7 @@ type Config struct {
 
 type ToolBinding struct {
 	Type                  string     `json:"type"`
-	ConnectorName         string     `json:"connector_name,omitempty"`
+	IntegrationName       string     `json:"integration_name,omitempty"`
 	Operation             string     `json:"operation,omitempty"`
 	FunctionDestinationID *uuid.UUID `json:"function_destination_id,omitempty"`
 }
@@ -65,12 +65,12 @@ func ParseConfig(raw json.RawMessage) (Config, error) {
 			return Config{}, fmt.Errorf("tool_bindings contains empty key")
 		}
 		binding.Type = strings.TrimSpace(binding.Type)
-		binding.ConnectorName = strings.TrimSpace(binding.ConnectorName)
+		binding.IntegrationName = strings.TrimSpace(binding.IntegrationName)
 		binding.Operation = strings.TrimSpace(binding.Operation)
 		switch binding.Type {
-		case BindingTypeConnector:
-			if binding.ConnectorName == "" || binding.Operation == "" {
-				return Config{}, fmt.Errorf("connector tool binding requires connector_name and operation")
+		case BindingTypeConnection:
+			if binding.IntegrationName == "" || binding.Operation == "" {
+				return Config{}, fmt.Errorf("connection tool binding requires integration_name and operation")
 			}
 		case BindingTypeFunction:
 			if binding.FunctionDestinationID == nil {

@@ -199,9 +199,9 @@ Revoke API key.
 
 ---
 
-## Connector Instances
+## Connections
 
-GET /admin/connector-instances
+GET /admin/connections
 
 Query params:
 
@@ -227,9 +227,9 @@ updated_at
 
 ---
 
-PUT /admin/connector-instances/{id}
+PUT /admin/connections/{id}
 
-Upsert connector instance.
+Upsert connection.
 
 Rules:
 

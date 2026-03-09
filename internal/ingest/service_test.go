@@ -75,6 +75,9 @@ func TestIngest(t *testing.T) {
 	if event.Type != "example.event.v1" {
 		t.Fatalf("event.Type = %q", event.Type)
 	}
+	if got, want := event.Source.Integration, "manual"; got != want {
+		t.Fatalf("event.Source.Integration = %q, want %q", got, want)
+	}
 }
 
 func TestIngestValidation(t *testing.T) {

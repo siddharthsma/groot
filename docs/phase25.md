@@ -59,7 +59,7 @@ Examples include:
 
 - tenant
 - subscription
-- connectorinstance
+- connection
 - inboundroute
 - events
 - schemas
@@ -81,7 +81,7 @@ delivery
 agent
 route
 functiondestination
-connectorinstance
+connection
 ```
 
 Plural names should only be used where the package represents a collection of utilities rather than a domain.
@@ -117,7 +117,7 @@ All imports must be updated accordingly.
 The codebase uses several related terms:
 
 - connector
-- connector instance
+- connection
 - connected app
 
 These terms partially overlap.
@@ -128,9 +128,9 @@ The internal conceptual model must be clarified as:
 
 ```
 Connector
-  Provider implementation (Slack, Stripe, Notion, Resend, LLM)
+  Integration implementation (Slack, Stripe, Notion, Resend, LLM)
 
-Connector Instance
+Connection
   Configured runtime instance for a tenant or global scope
 
 Connected App
@@ -147,7 +147,7 @@ Connected App
 
 ### Preferred Direction
 
-Treat **connector instance** as the primary runtime abstraction.
+Treat **connection** as the primary runtime abstraction.
 
 Connected apps should be retained only where strictly required.
 
@@ -254,7 +254,7 @@ docs/codebase_structure.md
 
 Documentation must clearly explain:
 
-- connector vs connector instance
+- connector vs connection
 - event vs stream
 - agent vs agent session vs agent runtime
 

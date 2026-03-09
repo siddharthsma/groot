@@ -25,13 +25,13 @@ func TestLLMMetricsLabels(t *testing.T) {
 	metrics.SetLicenseInfo("community", true)
 
 	output := metrics.Prometheus()
-	if !strings.Contains(output, `groot_llm_requests_total{provider="openai",operation="generate"} 1`) {
+	if !strings.Contains(output, `groot_llm_requests_total{integration="openai",operation="generate"} 1`) {
 		t.Fatalf("missing llm requests metric: %s", output)
 	}
-	if !strings.Contains(output, `groot_llm_failures_total{provider="anthropic"} 1`) {
+	if !strings.Contains(output, `groot_llm_failures_total{integration="anthropic"} 1`) {
 		t.Fatalf("missing llm failures metric: %s", output)
 	}
-	if !strings.Contains(output, `groot_llm_latency_seconds_bucket{provider="openai",operation="generate",le="0.25"} 1`) {
+	if !strings.Contains(output, `groot_llm_latency_seconds_bucket{integration="openai",operation="generate",le="0.25"} 1`) {
 		t.Fatalf("missing llm latency metric: %s", output)
 	}
 	if !strings.Contains(output, `groot_resend_emails_sent_total 1`) {
@@ -49,7 +49,7 @@ func TestLLMMetricsLabels(t *testing.T) {
 	if !strings.Contains(output, `groot_llm_extractions_total 1`) {
 		t.Fatalf("missing llm extractions metric: %s", output)
 	}
-	if !strings.Contains(output, `groot_result_events_emitted_total{connector="llm",operation="summarize",status="succeeded"} 1`) {
+	if !strings.Contains(output, `groot_result_events_emitted_total{integration="llm",operation="summarize",status="succeeded"} 1`) {
 		t.Fatalf("missing result event metric: %s", output)
 	}
 	if !strings.Contains(output, `groot_result_event_emit_failures_total 1`) {

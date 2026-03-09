@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"groot/internal/event"
 )
 
 func TestDeliverHTTP(t *testing.T) {
@@ -25,11 +27,12 @@ func TestDeliverHTTP(t *testing.T) {
 
 	a := New(Dependencies{})
 	err := a.DeliverHTTP(context.Background(), server.URL, Event{
-		EventID:  "1",
-		TenantID: "2",
-		Type:     "example.event.v1",
-		Source:   "manual",
-		Payload:  json.RawMessage(`{"ok":true}`),
+		EventID:    "1",
+		TenantID:   "2",
+		Type:       "example.event.v1",
+		Source:     event.Source{Kind: event.SourceKindExternal, Integration: "manual"},
+		SourceKind: event.SourceKindExternal,
+		Payload:    json.RawMessage(`{"ok":true}`),
 	})
 	if err != nil {
 		t.Fatalf("DeliverHTTP() error = %v", err)
@@ -62,11 +65,12 @@ func TestInvokeFunction(t *testing.T) {
 
 	a := New(Dependencies{})
 	result, err := a.InvokeFunction(context.Background(), "job-1", "fn-1", Event{
-		EventID:  "1",
-		TenantID: "2",
-		Type:     "example.event.v1",
-		Source:   "manual",
-		Payload:  json.RawMessage(`{"ok":true}`),
+		EventID:    "1",
+		TenantID:   "2",
+		Type:       "example.event.v1",
+		Source:     event.Source{Kind: event.SourceKindExternal, Integration: "manual"},
+		SourceKind: event.SourceKindExternal,
+		Payload:    json.RawMessage(`{"ok":true}`),
 	}, server.URL, secret, 5, 1)
 	if err != nil {
 		t.Fatalf("InvokeFunction() error = %v", err)
@@ -81,11 +85,12 @@ func TestInvokeFunction(t *testing.T) {
 
 func TestRenderOperationParamsPayloadPath(t *testing.T) {
 	rendered := renderOperationParams(json.RawMessage(`{"prompt":"Summarize {{payload.text}} from {{payload.count}} / {{payload.ok}}"}`), Event{
-		EventID:  "evt_1",
-		TenantID: "tenant_1",
-		Type:     "example.event.v1",
-		Source:   "manual",
-		Payload:  json.RawMessage(`{"text":"hello","count":3,"ok":true}`),
+		EventID:    "evt_1",
+		TenantID:   "tenant_1",
+		Type:       "example.event.v1",
+		Source:     event.Source{Kind: event.SourceKindExternal, Integration: "manual"},
+		SourceKind: event.SourceKindExternal,
+		Payload:    json.RawMessage(`{"text":"hello","count":3,"ok":true}`),
 	})
 	if got, want := string(rendered), `{"prompt":"Summarize hello from 3 / true"}`; got != want {
 		t.Fatalf("renderOperationParams() = %s, want %s", got, want)

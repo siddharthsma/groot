@@ -12,6 +12,7 @@ import (
 
 	agentruntime "groot/internal/agent/runtime"
 	"groot/internal/connectors/outbound"
+	eventpkg "groot/internal/event"
 	"groot/internal/tenant"
 )
 
@@ -19,7 +20,7 @@ type AgentDefinition struct {
 	ID                string
 	Name              string
 	Instructions      string
-	Provider          string
+	Integration       string
 	Model             string
 	AllowedTools      []string
 	ToolBindings      json.RawMessage
@@ -75,7 +76,7 @@ func (a *Activities) LoadAgent(ctx context.Context, tenantID string, agentID str
 		ID:                record.ID.String(),
 		Name:              record.Name,
 		Instructions:      record.Instructions,
-		Provider:          optionalString(record.Provider),
+		Integration:       optionalString(record.Integration),
 		Model:             optionalString(record.Model),
 		AllowedTools:      record.AllowedTools,
 		ToolBindings:      bindings,
@@ -169,7 +170,7 @@ func (a *Activities) RunAgentRuntime(ctx context.Context, req AgentRuntimeCallRe
 		SessionID:      req.Session.ID,
 		SessionKey:     req.Session.SessionKey,
 		Instructions:   req.Agent.Instructions,
-		Provider:       req.Agent.Provider,
+		Integration:    req.Agent.Integration,
 		Model:          req.Agent.Model,
 		AllowedTools:   req.Agent.AllowedTools,
 		ToolBindings:   req.Agent.ToolBindings,
@@ -177,8 +178,9 @@ func (a *Activities) RunAgentRuntime(ctx context.Context, req AgentRuntimeCallRe
 		Event: agentruntime.Event{
 			EventID:    req.Event.EventID,
 			Type:       req.Event.Type,
-			Source:     req.Event.Source,
+			Source:     runtimeSource(req.Event.Source),
 			SourceKind: req.Event.SourceKind,
+			Lineage:    runtimeLineage(req.Event.Lineage),
 			ChainDepth: req.Event.ChainDepth,
 			Payload:    req.Event.Payload,
 		},
@@ -216,6 +218,35 @@ func (a *Activities) RunAgentRuntime(ctx context.Context, req AgentRuntimeCallRe
 		ToolCalls:      response.ToolCalls,
 		Usage:          response.Usage,
 	}, nil
+}
+
+func runtimeSource(source eventpkg.Source) map[string]any {
+	return map[string]any{
+		"kind":                source.Kind,
+		"integration":         source.Integration,
+		"connection_id":       optionalRuntimeUUID(source.ConnectionID),
+		"connection_name":     source.ConnectionName,
+		"external_account_id": source.ExternalAccountID,
+	}
+}
+
+func runtimeLineage(lineage *eventpkg.Lineage) map[string]any {
+	if lineage == nil {
+		return nil
+	}
+	return map[string]any{
+		"integration":         lineage.Integration,
+		"connection_id":       optionalRuntimeUUID(lineage.ConnectionID),
+		"connection_name":     lineage.ConnectionName,
+		"external_account_id": lineage.ExternalAccountID,
+	}
+}
+
+func optionalRuntimeUUID(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return id.String()
 }
 
 func (a *Activities) RecordAgentRuntimeSteps(ctx context.Context, agentRunID string, usage agentruntime.Usage, toolCalls []agentruntime.ToolCallSummary) error {

@@ -9,41 +9,41 @@ import (
 
 	"github.com/google/uuid"
 
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/tenant"
 )
 
 type Route struct {
-	ID                  uuid.UUID  `json:"id"`
-	ConnectorName       string     `json:"connector_name"`
-	RouteKey            string     `json:"route_key"`
-	TenantID            uuid.UUID  `json:"tenant_id,omitempty"`
-	ConnectorInstanceID *uuid.UUID `json:"connector_instance_id,omitempty"`
-	CreatedAt           time.Time  `json:"created_at,omitempty"`
+	ID              uuid.UUID  `json:"id"`
+	IntegrationName string     `json:"integration_name"`
+	RouteKey        string     `json:"route_key"`
+	TenantID        uuid.UUID  `json:"tenant_id,omitempty"`
+	ConnectionID    *uuid.UUID `json:"connection_id,omitempty"`
+	CreatedAt       time.Time  `json:"created_at,omitempty"`
 }
 
 type Record struct {
-	ID                  uuid.UUID
-	ConnectorName       string
-	RouteKey            string
-	TenantID            tenant.ID
-	ConnectorInstanceID *uuid.UUID
-	CreatedAt           time.Time
+	ID              uuid.UUID
+	IntegrationName string
+	RouteKey        string
+	TenantID        tenant.ID
+	ConnectionID    *uuid.UUID
+	CreatedAt       time.Time
 }
 
 var (
-	ErrInvalidConnectorName      = errors.New("connector_name is required")
-	ErrInvalidRouteKey           = errors.New("route_key is required")
-	ErrDuplicateRoute            = errors.New("inbound route already exists")
-	ErrConnectorInstanceNotFound = errors.New("connector instance not found")
-	ErrInvalidConnectorInstance  = errors.New("connector instance must be tenant-scoped and owned by tenant")
+	ErrInvalidIntegrationName = errors.New("integration_name is required")
+	ErrInvalidRouteKey        = errors.New("route_key is required")
+	ErrDuplicateRoute         = errors.New("inbound route already exists")
+	ErrConnectionNotFound     = errors.New("connection not found")
+	ErrInvalidConnection      = errors.New("connection must be tenant-scoped and owned by tenant")
 )
 
 type Store interface {
 	CreateInboundRoute(context.Context, Record) (Route, error)
 	ListInboundRoutes(context.Context, tenant.ID) ([]Route, error)
 	ListAllInboundRoutes(context.Context) ([]Route, error)
-	GetConnectorInstance(context.Context, tenant.ID, uuid.UUID) (connectorinstance.Instance, error)
+	GetConnection(context.Context, tenant.ID, uuid.UUID) (connection.Instance, error)
 }
 
 type Metrics interface {
@@ -68,34 +68,34 @@ func NewService(store Store, metrics Metrics) *Service {
 	}
 }
 
-func (s *Service) Create(ctx context.Context, tenantID tenant.ID, connectorName, routeKey string, connectorInstanceID *uuid.UUID) (Route, error) {
-	normalizedConnector := strings.TrimSpace(connectorName)
-	if normalizedConnector == "" {
-		return Route{}, ErrInvalidConnectorName
+func (s *Service) Create(ctx context.Context, tenantID tenant.ID, integrationName, routeKey string, connectionID *uuid.UUID) (Route, error) {
+	normalizedIntegration := strings.TrimSpace(integrationName)
+	if normalizedIntegration == "" {
+		return Route{}, ErrInvalidIntegrationName
 	}
 	normalizedRouteKey := strings.TrimSpace(routeKey)
 	if normalizedRouteKey == "" {
 		return Route{}, ErrInvalidRouteKey
 	}
-	if connectorInstanceID != nil {
-		instance, err := s.store.GetConnectorInstance(ctx, tenantID, *connectorInstanceID)
+	if connectionID != nil {
+		instance, err := s.store.GetConnection(ctx, tenantID, *connectionID)
 		if err != nil {
-			if errors.Is(err, connectorinstance.ErrNotFound) {
-				return Route{}, ErrConnectorInstanceNotFound
+			if errors.Is(err, connection.ErrNotFound) {
+				return Route{}, ErrConnectionNotFound
 			}
-			return Route{}, fmt.Errorf("get connector instance: %w", err)
+			return Route{}, fmt.Errorf("get connection: %w", err)
 		}
-		if instance.Scope != connectorinstance.ScopeTenant || instance.OwnerTenantID == nil || *instance.OwnerTenantID != uuid.UUID(tenantID) {
-			return Route{}, ErrInvalidConnectorInstance
+		if instance.Scope != connection.ScopeTenant || instance.OwnerTenantID == nil || *instance.OwnerTenantID != uuid.UUID(tenantID) {
+			return Route{}, ErrInvalidConnection
 		}
 	}
 	route, err := s.store.CreateInboundRoute(ctx, Record{
-		ID:                  uuid.New(),
-		ConnectorName:       normalizedConnector,
-		RouteKey:            normalizedRouteKey,
-		TenantID:            tenantID,
-		ConnectorInstanceID: connectorInstanceID,
-		CreatedAt:           s.now(),
+		ID:              uuid.New(),
+		IntegrationName: normalizedIntegration,
+		RouteKey:        normalizedRouteKey,
+		TenantID:        tenantID,
+		ConnectionID:    connectionID,
+		CreatedAt:       s.now(),
 	})
 	if err != nil {
 		if errors.Is(err, ErrDuplicateRoute) {
@@ -104,7 +104,7 @@ func (s *Service) Create(ctx context.Context, tenantID tenant.ID, connectorName,
 		return Route{}, fmt.Errorf("create inbound route: %w", err)
 	}
 	if s.metrics != nil {
-		s.metrics.IncInboundRoutes(normalizedConnector)
+		s.metrics.IncInboundRoutes(normalizedIntegration)
 	}
 	return route, nil
 }

@@ -20,8 +20,9 @@ const (
 type ListEvent struct {
 	ID         string    `json:"id"`
 	Type       string    `json:"type"`
-	Source     string    `json:"source"`
+	Source     Source    `json:"source"`
 	SourceKind string    `json:"source_kind"`
+	Lineage    *Lineage  `json:"lineage,omitempty"`
 	ChainDepth int       `json:"chain_depth"`
 	OccurredAt time.Time `json:"occurred_at"`
 }
@@ -30,8 +31,9 @@ type AdminEvent struct {
 	ID         string          `json:"id"`
 	TenantID   string          `json:"tenant_id"`
 	Type       string          `json:"type"`
-	Source     string          `json:"source"`
+	Source     Source          `json:"source"`
 	SourceKind string          `json:"source_kind"`
+	Lineage    *Lineage        `json:"lineage,omitempty"`
 	CreatedAt  time.Time       `json:"created_at"`
 	Payload    json.RawMessage `json:"payload,omitempty"`
 }
@@ -64,6 +66,7 @@ func (s *QueryService) List(ctx context.Context, tenantID tenant.ID, eventType, 
 			Type:       evt.Type,
 			Source:     evt.Source,
 			SourceKind: evt.SourceKind,
+			Lineage:    evt.Lineage,
 			ChainDepth: evt.ChainDepth,
 			OccurredAt: evt.Timestamp,
 		})
@@ -85,6 +88,7 @@ func (s *QueryService) AdminList(ctx context.Context, tenantID tenant.ID, eventT
 			Type:       evt.Type,
 			Source:     evt.Source,
 			SourceKind: evt.SourceKind,
+			Lineage:    evt.Lineage,
 			CreatedAt:  evt.Timestamp,
 		}
 		if includePayload {
@@ -106,6 +110,7 @@ func (s *QueryService) AdminGet(ctx context.Context, eventID uuid.UUID, includeP
 		Type:       evt.Type,
 		Source:     evt.Source,
 		SourceKind: evt.SourceKind,
+		Lineage:    evt.Lineage,
 		CreatedAt:  evt.Timestamp,
 	}
 	if includePayload {

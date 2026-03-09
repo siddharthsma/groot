@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/delivery"
 	eventpkg "groot/internal/event"
 	"groot/internal/schema"
@@ -18,20 +18,20 @@ import (
 )
 
 type stubStore struct {
-	connectors  []connectorinstance.Instance
+	connectors  []connection.Instance
 	schemas     []schema.Schema
 	subs        []subscription.Subscription
 	events      map[uuid.UUID]eventpkg.Event
 	jobsByEvent map[uuid.UUID][]delivery.Job
 }
 
-func (s stubStore) ListConnectorInstancesAdmin(_ context.Context, tenantID *tenant.ID, connectorName, scope string) ([]connectorinstance.Instance, error) {
-	var out []connectorinstance.Instance
+func (s stubStore) ListConnectionsAdmin(_ context.Context, tenantID *tenant.ID, connectorName, scope string) ([]connection.Instance, error) {
+	var out []connection.Instance
 	for _, instance := range s.connectors {
 		if tenantID != nil && instance.TenantID != uuid.UUID(*tenantID) {
 			continue
 		}
-		if connectorName != "" && instance.ConnectorName != connectorName {
+		if connectorName != "" && instance.IntegrationName != connectorName {
 			continue
 		}
 		if scope != "" && instance.Scope != scope {
@@ -93,26 +93,26 @@ func TestBuildTopologyEdges(t *testing.T) {
 	subID := uuid.MustParse("33333333-3333-3333-3333-333333333333")
 	metrics := &stubMetrics{}
 	service := NewService(stubStore{
-		connectors: []connectorinstance.Instance{{
-			ID:            connectorID,
-			TenantID:      tenantID,
-			ConnectorName: connectorinstance.ConnectorNameSlack,
-			Scope:         connectorinstance.ScopeTenant,
-			Status:        "enabled",
+		connectors: []connection.Instance{{
+			ID:              connectorID,
+			TenantID:        tenantID,
+			IntegrationName: connection.IntegrationNameSlack,
+			Scope:           connection.ScopeTenant,
+			Status:          "enabled",
 		}},
 		schemas: []schema.Schema{{
 			FullName:   "slack.message.posted.v1",
-			Source:     connectorinstance.ConnectorNameSlack,
+			Source:     connection.IntegrationNameSlack,
 			SourceKind: eventpkg.SourceKindExternal,
 			Version:    1,
 		}},
 		subs: []subscription.Subscription{{
-			ID:                  subID,
-			TenantID:            tenantID,
-			DestinationType:     subscription.DestinationTypeConnector,
-			ConnectorInstanceID: &connectorID,
-			EventType:           "slack.message.posted.v1",
-			Status:              subscription.StatusActive,
+			ID:              subID,
+			TenantID:        tenantID,
+			DestinationType: subscription.DestinationTypeConnection,
+			ConnectionID:    &connectorID,
+			EventType:       "slack.message.posted.v1",
+			Status:          subscription.StatusActive,
 		}},
 	}, Config{MaxNodes: 10, MaxEdges: 10, DefaultLimit: 10, ExecutionTraversalMaxEvents: 10, ExecutionMaxDepth: 5}, nil, metrics)
 
@@ -134,12 +134,12 @@ func TestBuildTopologyEdges(t *testing.T) {
 func TestBuildTopologyTenantFilterExcludesOtherTenant(t *testing.T) {
 	tenantA := uuid.MustParse("11111111-1111-1111-1111-111111111111")
 	tenantB := uuid.MustParse("22222222-2222-2222-2222-222222222222")
-	connectorA := connectorinstance.Instance{ID: uuid.New(), TenantID: tenantA, ConnectorName: "slack", Scope: connectorinstance.ScopeTenant, Status: "enabled"}
-	connectorB := connectorinstance.Instance{ID: uuid.New(), TenantID: tenantB, ConnectorName: "slack", Scope: connectorinstance.ScopeTenant, Status: "enabled"}
-	subA := subscription.Subscription{ID: uuid.New(), TenantID: tenantA, DestinationType: subscription.DestinationTypeConnector, ConnectorInstanceID: &connectorA.ID, EventType: "slack.message.posted.v1", Status: subscription.StatusActive}
-	subB := subscription.Subscription{ID: uuid.New(), TenantID: tenantB, DestinationType: subscription.DestinationTypeConnector, ConnectorInstanceID: &connectorB.ID, EventType: "slack.message.posted.v1", Status: subscription.StatusActive}
+	connectorA := connection.Instance{ID: uuid.New(), TenantID: tenantA, IntegrationName: "slack", Scope: connection.ScopeTenant, Status: "enabled"}
+	connectorB := connection.Instance{ID: uuid.New(), TenantID: tenantB, IntegrationName: "slack", Scope: connection.ScopeTenant, Status: "enabled"}
+	subA := subscription.Subscription{ID: uuid.New(), TenantID: tenantA, DestinationType: subscription.DestinationTypeConnection, ConnectionID: &connectorA.ID, EventType: "slack.message.posted.v1", Status: subscription.StatusActive}
+	subB := subscription.Subscription{ID: uuid.New(), TenantID: tenantB, DestinationType: subscription.DestinationTypeConnection, ConnectionID: &connectorB.ID, EventType: "slack.message.posted.v1", Status: subscription.StatusActive}
 	service := NewService(stubStore{
-		connectors: []connectorinstance.Instance{connectorA, connectorB},
+		connectors: []connection.Instance{connectorA, connectorB},
 		schemas:    []schema.Schema{{FullName: "slack.message.posted.v1", Source: "slack", Version: 1}},
 		subs:       []subscription.Subscription{subA, subB},
 	}, Config{MaxNodes: 10, MaxEdges: 10, DefaultLimit: 10, ExecutionTraversalMaxEvents: 10, ExecutionMaxDepth: 5}, nil, nil)
@@ -149,7 +149,7 @@ func TestBuildTopologyTenantFilterExcludesOtherTenant(t *testing.T) {
 		t.Fatalf("BuildTopology() error = %v", err)
 	}
 	for _, node := range result.Nodes {
-		if node.Type == "connector_instance" && node.TenantID != nil && *node.TenantID == tenantB {
+		if node.Type == "connection" && node.TenantID != nil && *node.TenantID == tenantB {
 			t.Fatalf("unexpected tenant B node: %+v", node)
 		}
 		if node.Type == "subscription" && node.TenantID != nil && *node.TenantID == tenantB {
@@ -167,8 +167,8 @@ func TestBuildExecutionChain(t *testing.T) {
 	now := time.Date(2026, 3, 6, 12, 0, 0, 0, time.UTC)
 	service := NewService(stubStore{
 		events: map[uuid.UUID]eventpkg.Event{
-			rootEventID:   {EventID: rootEventID, TenantID: tenantID, Type: "example.root.v1", Source: "manual", SourceKind: eventpkg.SourceKindExternal, Timestamp: now, Payload: json.RawMessage(`{}`)},
-			resultEventID: {EventID: resultEventID, TenantID: tenantID, Type: "llm.generate.completed.v1", Source: "llm", SourceKind: eventpkg.SourceKindInternal, Timestamp: now.Add(2 * time.Second), Payload: json.RawMessage(`{}`)},
+			rootEventID:   {EventID: rootEventID, TenantID: tenantID, Type: "example.root.v1", Source: eventpkg.Source{Kind: eventpkg.SourceKindExternal, Integration: "manual"}, SourceKind: eventpkg.SourceKindExternal, Timestamp: now, Payload: json.RawMessage(`{}`)},
+			resultEventID: {EventID: resultEventID, TenantID: tenantID, Type: "llm.generate.completed.v1", Source: eventpkg.Source{Kind: eventpkg.SourceKindInternal, Integration: "llm"}, SourceKind: eventpkg.SourceKindInternal, Timestamp: now.Add(2 * time.Second), Payload: json.RawMessage(`{}`)},
 		},
 		jobsByEvent: map[uuid.UUID][]delivery.Job{
 			rootEventID: {{
@@ -213,9 +213,9 @@ func TestBuildExecutionReturnsPartialWhenDepthExceeded(t *testing.T) {
 	thirdEventID := uuid.MustParse("cccccccc-cccc-cccc-cccc-cccccccccccc")
 	service := NewService(stubStore{
 		events: map[uuid.UUID]eventpkg.Event{
-			rootEventID:   {EventID: rootEventID, TenantID: tenantID, Type: "example.root.v1", Source: "manual", SourceKind: eventpkg.SourceKindExternal, Timestamp: time.Now().UTC()},
-			resultEventID: {EventID: resultEventID, TenantID: tenantID, Type: "llm.generate.completed.v1", Source: "llm", SourceKind: eventpkg.SourceKindInternal, Timestamp: time.Now().UTC()},
-			thirdEventID:  {EventID: thirdEventID, TenantID: tenantID, Type: "slack.posted.v1", Source: "slack", SourceKind: eventpkg.SourceKindInternal, Timestamp: time.Now().UTC()},
+			rootEventID:   {EventID: rootEventID, TenantID: tenantID, Type: "example.root.v1", Source: eventpkg.Source{Kind: eventpkg.SourceKindExternal, Integration: "manual"}, SourceKind: eventpkg.SourceKindExternal, Timestamp: time.Now().UTC()},
+			resultEventID: {EventID: resultEventID, TenantID: tenantID, Type: "llm.generate.completed.v1", Source: eventpkg.Source{Kind: eventpkg.SourceKindInternal, Integration: "llm"}, SourceKind: eventpkg.SourceKindInternal, Timestamp: time.Now().UTC()},
+			thirdEventID:  {EventID: thirdEventID, TenantID: tenantID, Type: "slack.posted.v1", Source: eventpkg.Source{Kind: eventpkg.SourceKindInternal, Integration: "slack"}, SourceKind: eventpkg.SourceKindInternal, Timestamp: time.Now().UTC()},
 		},
 		jobsByEvent: map[uuid.UUID][]delivery.Job{
 			rootEventID: {{

@@ -3,15 +3,15 @@
 
 ## Goal
 
-Introduce a **Provider Plugin System** that allows providers to be developed and distributed **outside the core Groot repository** while remaining safely integrated with the Provider Framework introduced in Phases 27–28.
+Introduce a **Integration Plugin System** that allows integrations to be developed and distributed **outside the core Groot repository** while remaining safely integrated with the Integration Framework introduced in Phases 27–28.
 
 Phase 29 allows:
 
-- external developers to build providers independently
-- operators to install additional providers
-- Groot to load providers dynamically at startup
+- external developers to build integrations independently
+- operators to install additional integrations
+- Groot to load integrations dynamically at startup
 
-Providers remain **trusted binaries**, not arbitrary runtime code.
+Integrations remain **trusted binaries**, not arbitrary runtime code.
 
 No WASM runtime.
 No network plugin loading.
@@ -24,11 +24,11 @@ Plugins are **local filesystem modules** loaded at startup.
 
 Phase 29 implements:
 
-1. Provider plugin loading system
-2. External provider module format
+1. Integration plugin loading system
+2. External integration module format
 3. Plugin discovery at startup
 4. Plugin validation and safety checks
-5. Provider registry integration with plugins
+5. Integration registry integration with plugins
 6. Plugin development SDK
 7. Plugin packaging guidelines
 8. Plugin integration tests
@@ -39,14 +39,14 @@ Phase 29 implements:
 
 Rules:
 
-- plugin providers must implement the Phase 27 Provider interface
-- plugin providers must expose a ProviderSpec
-- plugin providers must be loaded only at startup
+- plugin integrations must implement the Phase 27 Integration interface
+- plugin integrations must expose a IntegrationSpec
+- plugin integrations must be loaded only at startup
 - plugins must be located in a configured directory
 - plugin loading must fail fast on errors
 - plugin loading must not allow runtime code injection
 
-Providers must be deterministic and safe.
+Integrations must be deterministic and safe.
 
 ---
 
@@ -56,11 +56,11 @@ Introduce configurable plugin directory.
 
 Environment variable:
 
-GROOT_PROVIDER_PLUGIN_DIR
+GROOT_INTEGRATION_PLUGIN_DIR
 
 Example:
 
-/opt/groot/providers
+/opt/groot/integrations
 
 If the directory does not exist:
 
@@ -79,14 +79,14 @@ Expected extension:
 
 Example files:
 
-/opt/groot/providers/slackplus.so
-/opt/groot/providers/customcrm.so
+/opt/groot/integrations/slackplus.so
+/opt/groot/integrations/customcrm.so
 
 Each plugin must expose a symbol:
 
-Provider
+Integration
 
-The symbol must implement the Provider interface defined in Phase 27.
+The symbol must implement the Integration interface defined in Phase 27.
 
 ---
 
@@ -106,9 +106,9 @@ Responsibilities:
 
 - scan plugin directory
 - load plugin files
-- resolve exported Provider symbol
-- validate ProviderSpec
-- register provider in Provider Registry
+- resolve exported Integration symbol
+- validate IntegrationSpec
+- register integration in Integration Registry
 
 ---
 
@@ -119,10 +119,10 @@ Startup sequence must perform:
 1. read plugin directory
 2. find all `.so` files
 3. load each plugin via Go plugin package
-4. extract exported symbol `Provider`
-5. verify symbol implements Provider interface
-6. validate ProviderSpec
-7. register provider in registry
+4. extract exported symbol `Integration`
+5. verify symbol implements Integration interface
+6. validate IntegrationSpec
+7. register integration in registry
 
 ---
 
@@ -130,9 +130,9 @@ Startup sequence must perform:
 
 Validation must enforce:
 
-1. ProviderSpec name unique
-2. plugin provider name not equal to core provider unless override allowed
-3. ProviderSpec valid under Phase 27 rules
+1. IntegrationSpec name unique
+2. plugin integration name not equal to core integration unless override allowed
+3. IntegrationSpec valid under Phase 27 rules
 4. schemas declared exist in registry
 5. operation names valid
 6. config fields valid
@@ -143,11 +143,11 @@ Startup must fail if plugin validation fails.
 
 # Plugin Override Rules
 
-Plugins must not silently override core providers.
+Plugins must not silently override core integrations.
 
 Default rule:
 
-- plugin provider name conflict causes startup failure
+- plugin integration name conflict causes startup failure
 
 Optional future extension:
 
@@ -155,7 +155,7 @@ GROOT_ALLOW_PROVIDER_OVERRIDE=true
 
 If enabled:
 
-- plugin may replace core provider implementation
+- plugin may replace core integration implementation
 
 Phase 29 should **not implement override logic yet**, only detect conflicts.
 
@@ -167,18 +167,18 @@ Create SDK module to help plugin authors.
 
 Location:
 
-sdk/provider
+sdk/integration
 
 Contents:
 
-provider.go
+integration.go
 helpers.go
 types.go
 
 SDK must expose:
 
-- Provider interface
-- ProviderSpec types
+- Integration interface
+- IntegrationSpec types
 - config validation helpers
 - schema helpers
 - operation helpers
@@ -191,11 +191,11 @@ Plugin authors should import SDK instead of internal packages.
 
 Add example plugin repository in:
 
-examples/provider-plugin
+examples/integration-plugin
 
-Example provider:
+Example integration:
 
-example_echo_provider
+example_echo_integration
 
 Capabilities:
 
@@ -205,13 +205,13 @@ Capabilities:
 
 Example plugin must demonstrate:
 
-- ProviderSpec
+- IntegrationSpec
 - operation implementation
 - plugin export symbol
 
 Example code snippet:
 
-var Provider provider.Provider = &EchoProvider{}
+var Integration integration.Integration = &EchoIntegration{}
 
 ---
 
@@ -221,16 +221,16 @@ Define packaging format.
 
 Recommended structure:
 
-myprovider/
+myintegration/
   go.mod
-  provider.go
+  integration.go
   config.go
   operations.go
   schemas.go
 
 Build command:
 
-go build -buildmode=plugin -o myprovider.so
+go build -buildmode=plugin -o myintegration.so
 
 Resulting `.so` file copied into plugin directory.
 
@@ -238,9 +238,9 @@ Resulting `.so` file copied into plugin directory.
 
 # Plugin Discovery API Extension
 
-Extend Phase 28 discovery endpoints to include plugin providers.
+Extend Phase 28 discovery endpoints to include plugin integrations.
 
-Provider detail responses must include field:
+Integration detail responses must include field:
 
 source
 
@@ -267,7 +267,7 @@ Possible errors:
 - plugin load failure
 - symbol not found
 - symbol wrong type
-- ProviderSpec invalid
+- IntegrationSpec invalid
 - name conflict
 
 Startup logs must clearly show plugin failure reason.
@@ -302,10 +302,10 @@ tests/integration/phase29_plugin_loading_test.go
 Tests must verify:
 
 1. plugin loads successfully
-2. plugin provider appears in provider catalog
+2. plugin integration appears in integration catalog
 3. plugin operations callable
 4. plugin config validation works
-5. duplicate provider names rejected
+5. duplicate integration names rejected
 6. invalid plugin symbol rejected
 
 ---
@@ -316,14 +316,14 @@ Add plugin documentation.
 
 Location:
 
-docs/providers/plugins.md
+docs/integrations/plugins.md
 
 Sections:
 
 - Plugin overview
 - Plugin architecture
 - Plugin build instructions
-- Provider SDK usage
+- Integration SDK usage
 - Plugin deployment
 - Plugin troubleshooting
 
@@ -384,9 +384,9 @@ All conditions must be met:
 
 - plugin loader implemented
 - plugin directory supported
-- plugin providers load successfully
-- plugin providers appear in provider catalog
-- plugin validation prevents unsafe providers
+- plugin integrations load successfully
+- plugin integrations appear in integration catalog
+- plugin validation prevents unsafe integrations
 - SDK available for plugin developers
 - example plugin created
 - plugin documentation added

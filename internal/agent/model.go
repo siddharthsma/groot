@@ -43,17 +43,17 @@ type RunRecord struct {
 }
 
 type StepRecord struct {
-	ID          uuid.UUID
-	AgentRunID  uuid.UUID
-	StepNum     int
-	Kind        string
-	ToolName    *string
-	ToolArgs    json.RawMessage
-	ToolResult  json.RawMessage
-	LLMProvider *string
-	LLMModel    *string
-	Usage       json.RawMessage
-	CreatedAt   time.Time
+	ID             uuid.UUID
+	AgentRunID     uuid.UUID
+	StepNum        int
+	Kind           string
+	ToolName       *string
+	ToolArgs       json.RawMessage
+	ToolResult     json.RawMessage
+	LLMIntegration *string
+	LLMModel       *string
+	Usage          json.RawMessage
+	CreatedAt      time.Time
 }
 
 type Definition struct {
@@ -61,7 +61,7 @@ type Definition struct {
 	TenantID          uuid.UUID              `json:"-"`
 	Name              string                 `json:"name"`
 	Instructions      string                 `json:"instructions"`
-	Provider          *string                `json:"provider,omitempty"`
+	Integration       *string                `json:"integration,omitempty"`
 	Model             *string                `json:"model,omitempty"`
 	AllowedTools      []string               `json:"allowed_tools"`
 	ToolBindings      map[string]ToolBinding `json:"tool_bindings"`
@@ -76,7 +76,7 @@ type DefinitionRecord struct {
 	TenantID          uuid.UUID
 	Name              string
 	Instructions      string
-	Provider          *string
+	Integration       *string
 	Model             *string
 	AllowedTools      []string
 	ToolBindings      map[string]ToolBinding

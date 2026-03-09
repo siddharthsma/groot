@@ -12,7 +12,7 @@ import (
 	"groot/internal/tenant"
 )
 
-func (d *DB) GetInboundRouteByTenant(ctx context.Context, connectorName string, tenantID tenant.ID) (inboundroute.Route, error) {
+func (d *DB) GetInboundRouteByTenant(ctx context.Context, integrationName string, tenantID tenant.ID) (inboundroute.Route, error) {
 	const query = `
 		SELECT id, connector_name, route_key, tenant_id, connector_instance_id, created_at
 		FROM inbound_routes
@@ -21,7 +21,7 @@ func (d *DB) GetInboundRouteByTenant(ctx context.Context, connectorName string, 
 		LIMIT 1
 	`
 	var route inboundroute.Route
-	err := d.db.QueryRowContext(ctx, query, connectorName, tenantID).Scan(&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt)
+	err := d.db.QueryRowContext(ctx, query, integrationName, tenantID).Scan(&route.ID, &route.IntegrationName, &route.RouteKey, &route.TenantID, &route.ConnectionID, &route.CreatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return inboundroute.Route{}, sql.ErrNoRows
@@ -31,7 +31,7 @@ func (d *DB) GetInboundRouteByTenant(ctx context.Context, connectorName string, 
 	return route, nil
 }
 
-func (d *DB) UpdateInboundRouteByTenant(ctx context.Context, connectorName string, tenantID tenant.ID, routeKey string, connectorInstanceID *uuid.UUID) (inboundroute.Route, error) {
+func (d *DB) UpdateInboundRouteByTenant(ctx context.Context, integrationName string, tenantID tenant.ID, routeKey string, connectionID *uuid.UUID) (inboundroute.Route, error) {
 	const query = `
 		UPDATE inbound_routes
 		SET route_key = $3, connector_instance_id = $4
@@ -39,8 +39,8 @@ func (d *DB) UpdateInboundRouteByTenant(ctx context.Context, connectorName strin
 		RETURNING id, connector_name, route_key, tenant_id, connector_instance_id, created_at
 	`
 	var route inboundroute.Route
-	err := d.db.QueryRowContext(ctx, query, connectorName, tenantID, routeKey, connectorInstanceID).Scan(
-		&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt,
+	err := d.db.QueryRowContext(ctx, query, integrationName, tenantID, routeKey, connectionID).Scan(
+		&route.ID, &route.IntegrationName, &route.RouteKey, &route.TenantID, &route.ConnectionID, &route.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -61,8 +61,8 @@ func (d *DB) CreateInboundRoute(ctx context.Context, record inboundroute.Record)
 		RETURNING id, connector_name, route_key, tenant_id, connector_instance_id, created_at
 	`
 	var route inboundroute.Route
-	err := d.db.QueryRowContext(ctx, query, record.ID, record.ConnectorName, record.RouteKey, record.TenantID, record.ConnectorInstanceID, record.CreatedAt).Scan(
-		&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt,
+	err := d.db.QueryRowContext(ctx, query, record.ID, record.IntegrationName, record.RouteKey, record.TenantID, record.ConnectionID, record.CreatedAt).Scan(
+		&route.ID, &route.IntegrationName, &route.RouteKey, &route.TenantID, &route.ConnectionID, &route.CreatedAt,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -73,15 +73,15 @@ func (d *DB) CreateInboundRoute(ctx context.Context, record inboundroute.Record)
 	return route, nil
 }
 
-func (d *DB) GetInboundRoute(ctx context.Context, connectorName, routeKey string) (inboundroute.Route, error) {
+func (d *DB) GetInboundRoute(ctx context.Context, integrationName, routeKey string) (inboundroute.Route, error) {
 	const query = `
 		SELECT id, connector_name, route_key, tenant_id, connector_instance_id, created_at
 		FROM inbound_routes
 		WHERE connector_name = $1 AND route_key = $2
 	`
 	var route inboundroute.Route
-	err := d.db.QueryRowContext(ctx, query, connectorName, routeKey).Scan(
-		&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt,
+	err := d.db.QueryRowContext(ctx, query, integrationName, routeKey).Scan(
+		&route.ID, &route.IntegrationName, &route.RouteKey, &route.TenantID, &route.ConnectionID, &route.CreatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -107,7 +107,7 @@ func (d *DB) ListInboundRoutes(ctx context.Context, tenantID tenant.ID) ([]inbou
 	var routes []inboundroute.Route
 	for rows.Next() {
 		var route inboundroute.Route
-		if err := rows.Scan(&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt); err != nil {
+		if err := rows.Scan(&route.ID, &route.IntegrationName, &route.RouteKey, &route.TenantID, &route.ConnectionID, &route.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan inbound route: %w", err)
 		}
 		routes = append(routes, route)
@@ -132,7 +132,7 @@ func (d *DB) ListAllInboundRoutes(ctx context.Context) ([]inboundroute.Route, er
 	var routes []inboundroute.Route
 	for rows.Next() {
 		var route inboundroute.Route
-		if err := rows.Scan(&route.ID, &route.ConnectorName, &route.RouteKey, &route.TenantID, &route.ConnectorInstanceID, &route.CreatedAt); err != nil {
+		if err := rows.Scan(&route.ID, &route.IntegrationName, &route.RouteKey, &route.TenantID, &route.ConnectionID, &route.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan inbound route: %w", err)
 		}
 		routes = append(routes, route)

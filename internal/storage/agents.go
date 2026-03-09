@@ -18,15 +18,15 @@ import (
 
 func (d *DB) CreateAgent(ctx context.Context, record agent.DefinitionRecord) (agent.Definition, error) {
 	const query = `
-		INSERT INTO agents (id, tenant_id, name, instructions, provider, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at, created_by_actor_type, created_by_actor_id, created_by_actor_email, updated_by_actor_type, updated_by_actor_id, updated_by_actor_email)
+		INSERT INTO agents (id, tenant_id, name, instructions, integration, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at, created_by_actor_type, created_by_actor_id, created_by_actor_email, updated_by_actor_type, updated_by_actor_id, updated_by_actor_email)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $13, $14, $15)
-		RETURNING id, tenant_id, name, instructions, provider, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
+		RETURNING id, tenant_id, name, instructions, integration, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
 	`
 	actor := actorFromContext(ctx)
 	var definition agent.Definition
 	allowedTools, _ := json.Marshal(record.AllowedTools)
 	toolBindings, _ := json.Marshal(record.ToolBindings)
-	err := scanAgentDefinition(d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.Name, record.Instructions, nullableString(optionalStringValue(record.Provider)), nullableString(optionalStringValue(record.Model)), allowedTools, toolBindings, record.MemoryEnabled, record.SessionAutoCreate, record.CreatedAt, record.UpdatedAt, actor.Type, actor.ID, actor.Email), &definition)
+	err := scanAgentDefinition(d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.Name, record.Instructions, nullableString(optionalStringValue(record.Integration)), nullableString(optionalStringValue(record.Model)), allowedTools, toolBindings, record.MemoryEnabled, record.SessionAutoCreate, record.CreatedAt, record.UpdatedAt, actor.Type, actor.ID, actor.Email), &definition)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			return agent.Definition{}, agent.ErrDuplicateName
@@ -41,7 +41,7 @@ func (d *DB) UpdateAgent(ctx context.Context, agentID uuid.UUID, tenantID tenant
 		UPDATE agents
 		SET name = $3,
 		    instructions = $4,
-		    provider = $5,
+		    integration = $5,
 		    model = $6,
 		    allowed_tools = $7,
 		    tool_bindings = $8,
@@ -52,13 +52,13 @@ func (d *DB) UpdateAgent(ctx context.Context, agentID uuid.UUID, tenantID tenant
 		    updated_by_actor_id = $13,
 		    updated_by_actor_email = $14
 		WHERE id = $1 AND tenant_id = $2
-		RETURNING id, tenant_id, name, instructions, provider, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
+		RETURNING id, tenant_id, name, instructions, integration, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
 	`
 	actor := actorFromContext(ctx)
 	var definition agent.Definition
 	allowedTools, _ := json.Marshal(record.AllowedTools)
 	toolBindings, _ := json.Marshal(record.ToolBindings)
-	err := scanAgentDefinition(d.db.QueryRowContext(ctx, query, agentID, tenantID, record.Name, record.Instructions, nullableString(optionalStringValue(record.Provider)), nullableString(optionalStringValue(record.Model)), allowedTools, toolBindings, record.MemoryEnabled, record.SessionAutoCreate, record.UpdatedAt, actor.Type, actor.ID, actor.Email), &definition)
+	err := scanAgentDefinition(d.db.QueryRowContext(ctx, query, agentID, tenantID, record.Name, record.Instructions, nullableString(optionalStringValue(record.Integration)), nullableString(optionalStringValue(record.Model)), allowedTools, toolBindings, record.MemoryEnabled, record.SessionAutoCreate, record.UpdatedAt, actor.Type, actor.ID, actor.Email), &definition)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return agent.Definition{}, agent.ErrNotFound
@@ -73,7 +73,7 @@ func (d *DB) UpdateAgent(ctx context.Context, agentID uuid.UUID, tenantID tenant
 
 func (d *DB) GetAgent(ctx context.Context, tenantID tenant.ID, agentID uuid.UUID) (agent.Definition, error) {
 	const query = `
-		SELECT id, tenant_id, name, instructions, provider, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
+		SELECT id, tenant_id, name, instructions, integration, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
 		FROM agents
 		WHERE id = $1 AND tenant_id = $2
 	`
@@ -90,7 +90,7 @@ func (d *DB) GetAgent(ctx context.Context, tenantID tenant.ID, agentID uuid.UUID
 
 func (d *DB) ListAgents(ctx context.Context, tenantID tenant.ID) ([]agent.Definition, error) {
 	const query = `
-		SELECT id, tenant_id, name, instructions, provider, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
+		SELECT id, tenant_id, name, instructions, integration, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
 		FROM agents
 		WHERE tenant_id = $1
 		ORDER BY created_at ASC
@@ -349,7 +349,7 @@ func (d *DB) CreateAgentRun(ctx context.Context, record agent.RunRecord) (agent.
 
 func (d *DB) CreateAgentStep(ctx context.Context, record agent.StepRecord) error {
 	const query = `
-		INSERT INTO agent_steps (id, agent_run_id, step_num, kind, tool_name, tool_args, tool_result, llm_provider, llm_model, usage, created_at)
+		INSERT INTO agent_steps (id, agent_run_id, step_num, kind, tool_name, tool_args, tool_result, llm_integration, llm_model, usage, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
 	if _, err := d.db.ExecContext(
@@ -362,7 +362,7 @@ func (d *DB) CreateAgentStep(ctx context.Context, record agent.StepRecord) error
 		nullableString(optionalStringValue(record.ToolName)),
 		jsonBytes(record.ToolArgs),
 		jsonBytes(record.ToolResult),
-		nullableString(optionalStringValue(record.LLMProvider)),
+		nullableString(optionalStringValue(record.LLMIntegration)),
 		nullableString(optionalStringValue(record.LLMModel)),
 		jsonBytes(record.Usage),
 		record.CreatedAt,
@@ -413,7 +413,7 @@ func scanAgentSession(row scanner, session *agent.Session) error {
 func scanAgentDefinition(row scanner, definition *agent.Definition) error {
 	var allowedTools []byte
 	var toolBindings []byte
-	if err := row.Scan(&definition.ID, &definition.TenantID, &definition.Name, &definition.Instructions, &definition.Provider, &definition.Model, &allowedTools, &toolBindings, &definition.MemoryEnabled, &definition.SessionAutoCreate, &definition.CreatedAt, &definition.UpdatedAt); err != nil {
+	if err := row.Scan(&definition.ID, &definition.TenantID, &definition.Name, &definition.Instructions, &definition.Integration, &definition.Model, &allowedTools, &toolBindings, &definition.MemoryEnabled, &definition.SessionAutoCreate, &definition.CreatedAt, &definition.UpdatedAt); err != nil {
 		return err
 	}
 	if len(allowedTools) == 0 {

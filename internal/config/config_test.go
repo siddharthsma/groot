@@ -118,8 +118,8 @@ func TestLoad(t *testing.T) {
 	if got, want := cfg.LLM.AnthropicAPIBaseURL, "http://127.0.0.1:18101"; got != want {
 		t.Fatalf("LLM.AnthropicAPIBaseURL = %q, want %q", got, want)
 	}
-	if got, want := cfg.LLM.DefaultProvider, "anthropic"; got != want {
-		t.Fatalf("LLM.DefaultProvider = %q, want %q", got, want)
+	if got, want := cfg.LLM.DefaultIntegration, "anthropic"; got != want {
+		t.Fatalf("LLM.DefaultIntegration = %q, want %q", got, want)
 	}
 	if got, want := cfg.LLM.TimeoutSeconds, 45; got != want {
 		t.Fatalf("LLM.TimeoutSeconds = %d, want %d", got, want)

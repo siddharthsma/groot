@@ -100,7 +100,7 @@ func (h *Harness) StartAPI(opts HarnessOptions) error {
 	if override, ok := opts.ExtraEnv["GROOT_EDITION"]; ok && strings.TrimSpace(override) != "" {
 		runtimeEdition = override
 	}
-	env := append(os.Environ(),
+	envValues := append(os.Environ(),
 		"GROOT_EDITION="+runtimeEdition,
 		"GROOT_HTTP_ADDR=127.0.0.1:"+fmt.Sprint(port),
 		"POSTGRES_DSN=postgres://groot:groot@localhost:5432/groot?sslmode=disable",
@@ -180,10 +180,14 @@ func (h *Harness) StartAPI(opts HarnessOptions) error {
 		"DELIVERY_MAX_INTERVAL=2s",
 	)
 	if strings.TrimSpace(opts.JWKSURL) != "" {
-		env = append(env, "JWT_JWKS_URL="+opts.JWKSURL, "ADMIN_JWT_JWKS_URL="+opts.JWKSURL)
+		envValues = append(envValues, "JWT_JWKS_URL="+opts.JWKSURL, "ADMIN_JWT_JWKS_URL="+opts.JWKSURL)
 	}
 	for key, value := range opts.ExtraEnv {
-		env = append(env, key+"="+value)
+		envValues = append(envValues, key+"="+value)
+	}
+	env := mergeEnv(envValues)
+	for key, value := range opts.ExtraEnv {
+		env = setEnvValue(env, key, value)
 	}
 	tempDir, err := os.MkdirTemp("", "groot-phase20-*")
 	if err != nil {
@@ -227,6 +231,38 @@ func (h *Harness) StartAPI(opts HarnessOptions) error {
 	return nil
 }
 
+func mergeEnv(values []string) []string {
+	merged := make(map[string]string, len(values))
+	order := make([]string, 0, len(values))
+	for _, entry := range values {
+		key, value, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, exists := merged[key]; !exists {
+			order = append(order, key)
+		}
+		merged[key] = value
+	}
+	result := make([]string, 0, len(order))
+	for _, key := range order {
+		result = append(result, key+"="+merged[key])
+	}
+	return result
+}
+
+func setEnvValue(values []string, key, value string) []string {
+	entry := key + "=" + value
+	for index, current := range values {
+		currentKey, _, ok := strings.Cut(current, "=")
+		if ok && currentKey == key {
+			values[index] = entry
+			return values
+		}
+	}
+	return append(values, entry)
+}
+
 func (h *Harness) StopAPI() error {
 	if h.apiCmd == nil || h.apiCmd.Process == nil {
 		return nil
@@ -262,6 +298,7 @@ func ResetDatabase(root string, db *sql.DB) error {
 		"CREATE SCHEMA public",
 		"GRANT ALL ON SCHEMA public TO groot",
 		"GRANT ALL ON SCHEMA public TO public",
+		"SET search_path TO public",
 	}
 	for _, stmt := range statements {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -372,15 +409,74 @@ func (h *Harness) WaitForEvent(tenantID, eventType string, timeout time.Duration
 }
 
 func (h *Harness) FindEvent(tenantID, eventType string) (map[string]any, bool) {
-	row := h.DB.QueryRow(`SELECT event_id, type, source, payload::text FROM events WHERE tenant_id = $1 AND type = $2 ORDER BY timestamp DESC LIMIT 1`, tenantID, eventType)
+	row := h.DB.QueryRow(`
+		SELECT
+			event_id,
+			type,
+			source,
+			source_kind,
+			source_connection_id,
+			source_connection_name,
+			source_external_account_id,
+			lineage_integration,
+			lineage_connection_id,
+			lineage_connection_name,
+			lineage_external_account_id,
+			payload::text
+		FROM events
+		WHERE tenant_id = $1 AND type = $2
+		ORDER BY timestamp DESC
+		LIMIT 1
+	`, tenantID, eventType)
 	var id string
 	var typ string
-	var source string
+	var sourceIntegration string
+	var sourceKind string
+	var sourceConnectionID sql.NullString
+	var sourceConnectionName sql.NullString
+	var sourceExternalAccountID sql.NullString
+	var lineageIntegration sql.NullString
+	var lineageConnectionID sql.NullString
+	var lineageConnectionName sql.NullString
+	var lineageExternalAccountID sql.NullString
 	var payloadText string
-	if err := row.Scan(&id, &typ, &source, &payloadText); err != nil {
+	if err := row.Scan(
+		&id,
+		&typ,
+		&sourceIntegration,
+		&sourceKind,
+		&sourceConnectionID,
+		&sourceConnectionName,
+		&sourceExternalAccountID,
+		&lineageIntegration,
+		&lineageConnectionID,
+		&lineageConnectionName,
+		&lineageExternalAccountID,
+		&payloadText,
+	); err != nil {
 		return nil, false
 	}
-	return map[string]any{"event_id": id, "type": typ, "source": source, "payload": payloadText}, true
+	result := map[string]any{
+		"event_id": id,
+		"type":     typ,
+		"source": map[string]any{
+			"kind":                sourceKind,
+			"integration":         sourceIntegration,
+			"connection_id":       nullString(sourceConnectionID),
+			"connection_name":     nullString(sourceConnectionName),
+			"external_account_id": nullString(sourceExternalAccountID),
+		},
+		"payload": payloadText,
+	}
+	if lineageIntegration.Valid || lineageConnectionID.Valid || lineageConnectionName.Valid || lineageExternalAccountID.Valid {
+		result["lineage"] = map[string]any{
+			"integration":         nullString(lineageIntegration),
+			"connection_id":       nullString(lineageConnectionID),
+			"connection_name":     nullString(lineageConnectionName),
+			"external_account_id": nullString(lineageExternalAccountID),
+		}
+	}
+	return result, true
 }
 
 func (h *Harness) WaitForDeliveryStatus(tenantID string, eventID string, status string, timeout time.Duration) map[string]any {

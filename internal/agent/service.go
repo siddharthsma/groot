@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 
 	agenttools "groot/internal/agent/tools"
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/functiondestination"
 	"groot/internal/tenant"
 )
@@ -52,8 +52,8 @@ type Store interface {
 	UpdateAgentSessionAfterRun(context.Context, uuid.UUID, *string, *uuid.UUID, time.Time) (Session, error)
 	LinkAgentSessionEvent(context.Context, SessionEventRecord) error
 	UpdateAgentRunContext(context.Context, uuid.UUID, uuid.UUID, *uuid.UUID) error
-	GetTenantConnectorInstanceByName(context.Context, tenant.ID, string) (connectorinstance.Instance, error)
-	GetGlobalConnectorInstanceByName(context.Context, string) (connectorinstance.Instance, error)
+	GetTenantConnectionByName(context.Context, tenant.ID, string) (connection.Instance, error)
+	GetGlobalConnectionByName(context.Context, string) (connection.Instance, error)
 }
 
 type FunctionDestinationStore interface {
@@ -77,7 +77,7 @@ func NewService(store Store, functionDestinations FunctionDestinationStore) *Ser
 type CreateRequest struct {
 	Name              string                 `json:"name"`
 	Instructions      string                 `json:"instructions"`
-	Provider          *string                `json:"provider,omitempty"`
+	Integration       *string                `json:"integration,omitempty"`
 	Model             *string                `json:"model,omitempty"`
 	AllowedTools      []string               `json:"allowed_tools"`
 	ToolBindings      map[string]ToolBinding `json:"tool_bindings"`
@@ -271,7 +271,7 @@ func (s *Service) buildRecord(ctx context.Context, agentID uuid.UUID, tenantID t
 	cfg, err := ParseConfig(mustMarshal(map[string]any{
 		"instructions":  instructions,
 		"allowed_tools": req.AllowedTools,
-		"provider":      normalizeOptionalString(req.Provider),
+		"integration":   normalizeOptionalString(req.Integration),
 		"model":         normalizeOptionalString(req.Model),
 		"tool_bindings": req.ToolBindings,
 	}))
@@ -297,7 +297,7 @@ func (s *Service) buildRecord(ctx context.Context, agentID uuid.UUID, tenantID t
 				}
 				continue
 			}
-			if _, ok := registry.Get(binding.ConnectorName + "." + binding.Operation); !ok {
+			if _, ok := registry.Get(binding.IntegrationName + "." + binding.Operation); !ok {
 				return DefinitionRecord{}, ErrInvalidAllowedTools
 			}
 			continue
@@ -313,7 +313,7 @@ func (s *Service) buildRecord(ctx context.Context, agentID uuid.UUID, tenantID t
 		TenantID:          uuid.UUID(tenantID),
 		Name:              name,
 		Instructions:      instructions,
-		Provider:          normalizeOptionalString(req.Provider),
+		Integration:       normalizeOptionalString(req.Integration),
 		Model:             normalizeOptionalString(req.Model),
 		AllowedTools:      cfg.AllowedTools,
 		ToolBindings:      cfg.ToolBindings,

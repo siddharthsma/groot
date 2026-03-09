@@ -243,7 +243,7 @@ func matchingSubscriptions(event eventpkg.Event, subs []subscription.Subscriptio
 		if sub.EventType != event.Type {
 			continue
 		}
-		if sub.EventSource != nil && *sub.EventSource != event.Source {
+		if sub.EventSource != nil && *sub.EventSource != event.SourceIntegration() {
 			continue
 		}
 		result = append(result, sub)

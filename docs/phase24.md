@@ -142,7 +142,7 @@ It must not contain tenant or webhook logic.
 
 Must contain only external inbound webhook endpoints.
 
-Includes provider-specific files for:
+Includes integration-specific files for:
 
 - Resend
 - Slack
@@ -209,7 +209,7 @@ Admin auth applies only to `/admin/*`.
 
 ## Webhooks
 
-Webhook routes must remain reachable according to current provider behavior and existing signature-verification rules.
+Webhook routes must remain reachable according to current integration behavior and existing signature-verification rules.
 
 They must not require tenant/admin auth.
 
@@ -250,7 +250,7 @@ handler -> storage + other services + inline rules
 This rule must be applied especially to:
 
 - admin handlers
-- connector instance handlers
+- connection handlers
 - replay handlers
 - agent/session handlers
 
@@ -286,12 +286,12 @@ Webhook handlers should be grouped consistently.
 
 Rules:
 
-- one file per inbound provider where practical
-- provider verification logic may call existing connector helper code
+- one file per inbound integration where practical
+- integration verification logic may call existing connector helper code
 - route registration for webhooks must be centralized in `webhooks/routes.go`
 - no tenant/admin routes should live in webhook files
 
-This is a structural cleanup only. Existing provider behavior must remain unchanged.
+This is a structural cleanup only. Existing integration behavior must remain unchanged.
 
 ---
 
@@ -312,7 +312,7 @@ Add or refine tests for HTTP surface structure.
 ## Test 3 — Webhook routes
 
 - verify webhook endpoints are reachable without tenant/admin auth where expected
-- verify provider verification path still works
+- verify integration verification path still works
 
 ## Test 4 — Internal routes
 

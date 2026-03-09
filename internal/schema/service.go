@@ -231,8 +231,7 @@ func validateTemplateString(text string, parsed schemaNode) error {
 	matches := placeholderPattern.FindAllStringSubmatch(text, -1)
 	for _, match := range matches {
 		key := strings.TrimSpace(match[1])
-		switch key {
-		case "event_id", "tenant_id", "type", "source", "timestamp":
+		if isAllowedContextToken(key) {
 			continue
 		}
 		if !strings.HasPrefix(key, "payload") {

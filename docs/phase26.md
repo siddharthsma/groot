@@ -154,7 +154,7 @@ Rules:
 - remove dead storage/service helpers
 - route internal logic through canonical abstractions such as:
   - connector
-  - connector instance
+  - connection
 
 External API compatibility may remain if required, but internal duplicated models/helpers must be removed.
 

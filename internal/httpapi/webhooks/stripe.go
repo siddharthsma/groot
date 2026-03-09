@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	stripeconnector "groot/internal/connectors/providers/stripe"
 	"groot/internal/httpapi/common"
+	"groot/internal/integrations/stripe"
 )
 
 func (h *Handlers) stripeWebhook(w http.ResponseWriter, r *http.Request) {
@@ -22,7 +22,7 @@ func (h *Handlers) stripeWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = r.Body.Close() }()
 	if err := h.state.StripeSvc.HandleWebhook(r.Context(), rawBody, r.Header.Clone()); err != nil {
-		if errors.Is(err, stripeconnector.ErrUnauthorized) {
+		if errors.Is(err, stripe.ErrUnauthorized) {
 			common.WriteError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

@@ -71,7 +71,7 @@ Optional local mock services must be added for checkpoint tests:
 - mock Stripe webhook sender
 - mock function destination endpoint
 - mock JWKS server
-- mock LLM provider server
+- mock LLM integration server
 
 Preferred approach:
 - in-test Go HTTP servers where possible

@@ -11,7 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/delivery"
 	"groot/internal/event"
 	"groot/internal/schema"
@@ -20,7 +20,7 @@ import (
 )
 
 type Store interface {
-	ListConnectorInstancesAdmin(context.Context, *tenant.ID, string, string) ([]connectorinstance.Instance, error)
+	ListConnectionsAdmin(context.Context, *tenant.ID, string, string) ([]connection.Instance, error)
 	ListSubscriptionsAdmin(context.Context, *tenant.ID, string, string) ([]subscription.Subscription, error)
 	ListEventSchemas(context.Context) ([]schema.Schema, error)
 	GetEvent(context.Context, uuid.UUID) (event.Event, error)
@@ -65,12 +65,12 @@ func (s *Service) BuildTopology(ctx context.Context, req TopologyRequest) (Topol
 		s.metrics.IncGraphRequests()
 	}
 	limit := s.normalizeLimit(req.Limit)
-	connectorName := strings.TrimSpace(req.ConnectorName)
+	connectorName := strings.TrimSpace(req.IntegrationName)
 	eventTypePrefix := strings.TrimSpace(req.EventTypePrefix)
 
-	connectors, err := s.store.ListConnectorInstancesAdmin(ctx, nil, connectorName, "")
+	connectors, err := s.store.ListConnectionsAdmin(ctx, nil, connectorName, "")
 	if err != nil {
-		return Topology{}, fmt.Errorf("list connector instances: %w", err)
+		return Topology{}, fmt.Errorf("list connections: %w", err)
 	}
 	schemasList, err := s.store.ListEventSchemas(ctx)
 	if err != nil {
@@ -107,14 +107,14 @@ func (s *Service) BuildTopology(ctx context.Context, req TopologyRequest) (Topol
 	}
 
 	for _, instance := range connectors {
-		if req.TenantID != nil && instance.Scope == connectorinstance.ScopeTenant && instance.TenantID != *req.TenantID {
+		if req.TenantID != nil && instance.Scope == connection.ScopeTenant && instance.TenantID != *req.TenantID {
 			continue
 		}
-		if !req.IncludeGlobal && instance.Scope == connectorinstance.ScopeGlobal {
+		if !req.IncludeGlobal && instance.Scope == connection.ScopeGlobal {
 			continue
 		}
 		if eventTypePrefix != "" {
-			if _, ok := matchingSchemaSources[instance.ConnectorName]; !ok {
+			if _, ok := matchingSchemaSources[instance.IntegrationName]; !ok {
 				continue
 			}
 		}
@@ -124,7 +124,7 @@ func (s *Service) BuildTopology(ctx context.Context, req TopologyRequest) (Topol
 			return Topology{}, err
 		}
 		for _, schema := range schemaByFullName {
-			if schema.Source != instance.ConnectorName {
+			if schema.Source != instance.IntegrationName {
 				continue
 			}
 			if err := builder.addEdge(Edge{
@@ -160,8 +160,8 @@ func (s *Service) BuildTopology(ctx context.Context, req TopologyRequest) (Topol
 				return Topology{}, err
 			}
 		}
-		if sub.DestinationType == subscription.DestinationTypeConnector && sub.ConnectorInstanceID != nil {
-			targetID := connectorNodeID(*sub.ConnectorInstanceID)
+		if sub.DestinationType == subscription.DestinationTypeConnection && sub.ConnectionID != nil {
+			targetID := connectorNodeID(*sub.ConnectionID)
 			if builder.hasNode(targetID) {
 				if err := builder.addEdge(Edge{
 					From: subscriptionNodeID(sub.ID),
@@ -390,21 +390,21 @@ func (b *builder) edgesSlice() []Edge {
 	return out
 }
 
-func connectorNode(instance connectorinstance.Instance) Node {
+func connectorNode(instance connection.Instance) Node {
 	var tenantID *uuid.UUID
-	if instance.Scope == connectorinstance.ScopeTenant {
+	if instance.Scope == connection.ScopeTenant {
 		id := instance.TenantID
 		tenantID = &id
 	}
 	return Node{
 		ID:       connectorNodeID(instance.ID),
-		Type:     "connector_instance",
-		Label:    instance.ConnectorName,
+		Type:     "connection",
+		Label:    instance.IntegrationName,
 		TenantID: tenantID,
 		Data: map[string]any{
-			"connector_name": instance.ConnectorName,
-			"scope":          instance.Scope,
-			"status":         instance.Status,
+			"integration_name": instance.IntegrationName,
+			"scope":            instance.Scope,
+			"status":           instance.Status,
 		},
 	}
 }

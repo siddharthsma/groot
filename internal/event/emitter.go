@@ -48,7 +48,7 @@ type EmitRequest struct {
 	DeliveryJobID       uuid.UUID
 	ExistingResultEvent *uuid.UUID
 	InputEvent          Event
-	Connector           string
+	Integration         string
 	Operation           string
 	Status              string
 	Output              map[string]any
@@ -112,11 +112,11 @@ func (e *Emitter) EmitResultEvent(ctx context.Context, req EmitRequest) error {
 
 	payload, err := buildPayload(req)
 	if err != nil {
-		e.fail(req.Connector, req.Operation, fmt.Errorf("build result event payload: %w", err))
+		e.fail(req.Integration, req.Operation, fmt.Errorf("build result event payload: %w", err))
 		return nil
 	}
 
-	eventType := resultEventType(req.Connector, req.Operation, req.Status)
+	eventType := resultEventType(req.Integration, req.Operation, req.Status)
 	fullName := schema.FullName(eventType, 1)
 	schemaVersion := 1
 	if e.schemas != nil {
@@ -126,12 +126,12 @@ func (e *Emitter) EmitResultEvent(ctx context.Context, req EmitRequest) error {
 			fullName = latest.FullName
 			schemaVersion = latest.Version
 		case latestErr != nil && !errors.Is(latestErr, sql.ErrNoRows):
-			e.fail(req.Connector, req.Operation, fmt.Errorf("get latest schema: %w", latestErr))
+			e.fail(req.Integration, req.Operation, fmt.Errorf("get latest schema: %w", latestErr))
 			return nil
 		}
-		resolvedSchema, validationErr := e.schemas.ValidateEvent(ctx, fullName, req.Connector, SourceKindInternal, payload)
+		resolvedSchema, validationErr := e.schemas.ValidateEvent(ctx, fullName, req.Integration, SourceKindInternal, payload)
 		if validationErr != nil {
-			e.fail(req.Connector, req.Operation, fmt.Errorf("validate result event: %w", validationErr))
+			e.fail(req.Integration, req.Operation, fmt.Errorf("validate result event: %w", validationErr))
 			return nil
 		}
 		if resolvedSchema.FullName != "" {
@@ -144,8 +144,9 @@ func (e *Emitter) EmitResultEvent(ctx context.Context, req EmitRequest) error {
 		EventID:        uuid.New(),
 		TenantID:       req.InputEvent.TenantID,
 		Type:           fullName,
-		Source:         req.Connector,
+		Source:         NormalizeSource(Source{Kind: SourceKindInternal, Integration: req.Integration}, SourceKindInternal),
 		SourceKind:     SourceKindInternal,
+		Lineage:        inheritedLineage(req.InputEvent),
 		ChainDepth:     req.InputEvent.ChainDepth + 1,
 		Timestamp:      e.now(),
 		Payload:        payload,
@@ -162,12 +163,12 @@ func (e *Emitter) EmitResultEvent(ctx context.Context, req EmitRequest) error {
 	}
 
 	if err := e.publisher.PublishEvent(ctx, evt); err != nil {
-		e.fail(req.Connector, req.Operation, fmt.Errorf("publish result event: %w", err))
+		e.fail(req.Integration, req.Operation, fmt.Errorf("publish result event: %w", err))
 		return nil
 	}
 	linked, err := e.store.SaveResultEvent(ctx, req.DeliveryJobID, evt)
 	if err != nil {
-		e.fail(req.Connector, req.Operation, fmt.Errorf("store result event: %w", err))
+		e.fail(req.Integration, req.Operation, fmt.Errorf("store result event: %w", err))
 		return nil
 	}
 	if !linked {
@@ -175,7 +176,7 @@ func (e *Emitter) EmitResultEvent(ctx context.Context, req EmitRequest) error {
 	}
 
 	if e.metrics != nil {
-		e.metrics.IncResultEventsEmitted(req.Connector, req.Operation, req.Status)
+		e.metrics.IncResultEventsEmitted(req.Integration, req.Operation, req.Status)
 	}
 	if e.logger != nil {
 		e.logger.Info("result_event_emit_succeeded",
@@ -188,13 +189,28 @@ func (e *Emitter) EmitResultEvent(ctx context.Context, req EmitRequest) error {
 	return nil
 }
 
+func inheritedLineage(input Event) *Lineage {
+	if input.Lineage != nil {
+		return NormalizeLineage(input.Lineage)
+	}
+	if input.Source.Kind != SourceKindExternal {
+		return nil
+	}
+	return NormalizeLineage(&Lineage{
+		Integration:       input.Source.Integration,
+		ConnectionID:      input.Source.ConnectionID,
+		ConnectionName:    input.Source.ConnectionName,
+		ExternalAccountID: input.Source.ExternalAccountID,
+	})
+}
+
 func (e *Emitter) fail(connector, operation string, err error) {
 	if e.metrics != nil {
 		e.metrics.IncResultEventEmitFailures()
 	}
 	if e.logger != nil {
 		e.logger.Error("result_event_emit_failed",
-			slog.String("connector_name", connector),
+			slog.String("integration_name", connector),
 			slog.String("operation", operation),
 			slog.String("error", err.Error()),
 		)
@@ -206,14 +222,14 @@ func buildPayload(req EmitRequest) (json.RawMessage, error) {
 		"input_event_id":   req.InputEvent.EventID.String(),
 		"subscription_id":  req.SubscriptionID.String(),
 		"delivery_job_id":  req.DeliveryJobID.String(),
-		"connector_name":   req.Connector,
+		"integration_name": req.Integration,
 		"operation":        req.Operation,
 		"status":           req.Status,
 		"external_id":      req.ExternalID,
 		"http_status_code": req.HTTPStatus,
 		"output":           emptyOutput(req.Output),
 	}
-	if req.Connector == "llm" && req.Operation == "agent" {
+	if req.Integration == "llm" && req.Operation == "agent" {
 		payload["tool_calls"] = emptyToolCalls(req.ToolCalls)
 		if req.AgentID != nil {
 			payload["agent_id"] = req.AgentID.String()

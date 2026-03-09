@@ -13,7 +13,7 @@ import (
 
 	"groot/internal/agent"
 	agenttools "groot/internal/agent/tools"
-	"groot/internal/connectorinstance"
+	"groot/internal/connection"
 	"groot/internal/connectors/outbound"
 	eventpkg "groot/internal/event"
 )
@@ -22,7 +22,7 @@ type AgentToolTarget struct {
 	RequestedName         string
 	DefinitionName        string
 	ExecutionKind         string
-	ConnectorName         string
+	IntegrationName       string
 	Operation             string
 	FunctionDestinationID string
 }
@@ -37,14 +37,14 @@ type AgentToolExecutionRequest struct {
 }
 
 type AgentToolExecutionResult struct {
-	Tool       string          `json:"tool"`
-	OK         bool            `json:"ok"`
-	Result     json.RawMessage `json:"result"`
-	ExternalID string          `json:"external_id,omitempty"`
-	StatusCode int             `json:"status_code,omitempty"`
-	Provider   string          `json:"provider,omitempty"`
-	Model      string          `json:"model,omitempty"`
-	Usage      outbound.Usage  `json:"usage"`
+	Tool        string          `json:"tool"`
+	OK          bool            `json:"ok"`
+	Result      json.RawMessage `json:"result"`
+	ExternalID  string          `json:"external_id,omitempty"`
+	StatusCode  int             `json:"status_code,omitempty"`
+	Integration string          `json:"integration,omitempty"`
+	Model       string          `json:"model,omitempty"`
+	Usage       outbound.Usage  `json:"usage"`
 }
 
 func (a *Activities) StartAgentRun(ctx context.Context, tenantID string, inputEventID string, subscriptionID string) (string, error) {
@@ -86,7 +86,7 @@ func (a *Activities) StartAgentRun(ctx context.Context, tenantID string, inputEv
 	return run.ID.String(), nil
 }
 
-func (a *Activities) RecordAgentLLMStep(ctx context.Context, agentRunID string, stepNum int, provider string, model string, usage outbound.Usage) error {
+func (a *Activities) RecordAgentLLMStep(ctx context.Context, agentRunID string, stepNum int, integration string, model string, usage outbound.Usage) error {
 	runID, err := uuid.Parse(agentRunID)
 	if err != nil {
 		return err
@@ -100,14 +100,14 @@ func (a *Activities) RecordAgentLLMStep(ctx context.Context, agentRunID string, 
 		return fmt.Errorf("marshal agent llm usage: %w", err)
 	}
 	if err := a.store.CreateAgentStep(ctx, agent.StepRecord{
-		ID:          uuid.New(),
-		AgentRunID:  runID,
-		StepNum:     stepNum,
-		Kind:        agent.StepKindLLMCall,
-		LLMProvider: optionalStringPtr(provider),
-		LLMModel:    optionalStringPtr(model),
-		Usage:       usageBody,
-		CreatedAt:   time.Now().UTC(),
+		ID:             uuid.New(),
+		AgentRunID:     runID,
+		StepNum:        stepNum,
+		Kind:           agent.StepKindLLMCall,
+		LLMIntegration: optionalStringPtr(integration),
+		LLMModel:       optionalStringPtr(model),
+		Usage:          usageBody,
+		CreatedAt:      time.Now().UTC(),
 	}); err != nil {
 		return err
 	}
@@ -118,7 +118,7 @@ func (a *Activities) RecordAgentLLMStep(ctx context.Context, agentRunID string, 
 		a.logger.Info("agent_step_llm_call",
 			slog.String("agent_run_id", agentRunID),
 			slog.Int("step", stepNum),
-			slog.String("provider", provider),
+			slog.String("integration", integration),
 			slog.String("model", model),
 		)
 	}
@@ -201,23 +201,23 @@ func (a *Activities) ExecuteAgentTool(ctx context.Context, req AgentToolExecutio
 	}
 	switch req.Target.ExecutionKind {
 	case "connector":
-		instance, err := a.resolveToolConnector(ctx, req.TenantID, req.Target.ConnectorName)
+		instance, err := a.resolveToolConnector(ctx, req.TenantID, req.Target.IntegrationName)
 		if err != nil {
 			return AgentToolExecutionResult{}, wrapActivityError(outbound.PermanentError{Err: err})
 		}
-		result, err := a.ExecuteConnector(ctx, req.DeliveryJobID, req.TenantID, req.Event, instance, req.Target.Operation, req.Arguments, req.Attempt)
+		result, err := a.ExecuteConnection(ctx, req.DeliveryJobID, req.TenantID, req.Event, instance, req.Target.Operation, req.Arguments, req.Attempt)
 		if err != nil {
 			return AgentToolExecutionResult{}, err
 		}
 		return AgentToolExecutionResult{
-			Tool:       req.Target.RequestedName,
-			OK:         true,
-			Result:     normalizeAgentConnectorResult(result),
-			ExternalID: result.ExternalID,
-			StatusCode: result.StatusCode,
-			Provider:   result.Provider,
-			Model:      result.Model,
-			Usage:      result.Usage,
+			Tool:        req.Target.RequestedName,
+			OK:          true,
+			Result:      normalizeAgentConnectionResult(result),
+			ExternalID:  result.ExternalID,
+			StatusCode:  result.StatusCode,
+			Integration: result.Integration,
+			Model:       result.Model,
+			Usage:       result.Usage,
 		}, nil
 	case "function":
 		destination, err := a.LoadFunctionDestination(ctx, req.Target.FunctionDestinationID, req.TenantID)
@@ -247,36 +247,36 @@ func (a *Activities) ExecuteAgentTool(ctx context.Context, req AgentToolExecutio
 	}
 }
 
-func (a *Activities) resolveToolConnector(ctx context.Context, tenantID string, connectorName string) (ConnectorInstance, error) {
+func (a *Activities) resolveToolConnector(ctx context.Context, tenantID string, connectorName string) (Connection, error) {
 	tID, err := uuid.Parse(tenantID)
 	if err != nil {
-		return ConnectorInstance{}, err
+		return Connection{}, err
 	}
-	instance, err := a.store.GetTenantConnectorInstanceByName(ctx, tID, connectorName)
+	instance, err := a.store.GetTenantConnectionByName(ctx, tID, connectorName)
 	if err == nil {
-		return ConnectorInstance{
-			ID:            instance.ID.String(),
-			ConnectorName: instance.ConnectorName,
-			Scope:         instance.Scope,
-			Config:        instance.Config,
+		return Connection{
+			ID:              instance.ID.String(),
+			IntegrationName: instance.IntegrationName,
+			Scope:           instance.Scope,
+			Config:          instance.Config,
 		}, nil
 	}
-	if !errors.Is(err, connectorinstance.ErrNotFound) {
-		return ConnectorInstance{}, err
+	if !errors.Is(err, connection.ErrNotFound) {
+		return Connection{}, err
 	}
-	instance, err = a.store.GetGlobalConnectorInstanceByName(ctx, connectorName)
+	instance, err = a.store.GetGlobalConnectionByName(ctx, connectorName)
 	if err != nil {
-		return ConnectorInstance{}, err
+		return Connection{}, err
 	}
-	return ConnectorInstance{
-		ID:            instance.ID.String(),
-		ConnectorName: instance.ConnectorName,
-		Scope:         instance.Scope,
-		Config:        instance.Config,
+	return Connection{
+		ID:              instance.ID.String(),
+		IntegrationName: instance.IntegrationName,
+		Scope:           instance.Scope,
+		Config:          instance.Config,
 	}, nil
 }
 
-func normalizeAgentConnectorResult(result ConnectorResult) json.RawMessage {
+func normalizeAgentConnectionResult(result ConnectionResult) json.RawMessage {
 	if len(result.Output) > 0 {
 		return result.Output
 	}
@@ -306,8 +306,9 @@ func buildAgentFunctionEvent(event Event, toolName string, args json.RawMessage)
 		EventID:    event.EventID,
 		TenantID:   event.TenantID,
 		Type:       "llm.agent.tool_call.v1",
-		Source:     "llm",
+		Source:     eventpkg.Source{Kind: eventpkg.SourceKindInternal, Integration: "llm"},
 		SourceKind: eventpkg.SourceKindInternal,
+		Lineage:    event.Lineage,
 		ChainDepth: event.ChainDepth,
 		Timestamp:  event.Timestamp,
 		Payload:    payload,

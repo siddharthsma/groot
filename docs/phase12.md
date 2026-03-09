@@ -46,7 +46,7 @@ source_kind = external | internal
 
 Rules:
 
-- external: ingested from provider webhooks or tenant POST /events
+- external: ingested from integration webhooks or tenant POST /events
 - internal: emitted by Groot as a result of executing an action
 
 ---
@@ -201,7 +201,7 @@ Output:
 
 {
   "text": "string",
-  "provider": "openai|anthropic",
+  "integration": "openai|anthropic",
   "model": "string",
   "usage": {
     "prompt_tokens": 0,
@@ -317,8 +317,8 @@ groot_result_event_emit_failures_total
 ## Test 1: LLM → Slack chain
 
 1. Create tenant
-2. Create LLM global connector instance
-3. Create Slack tenant connector instance
+2. Create LLM global connection
+3. Create Slack tenant connection
 
 Subscription A:
 

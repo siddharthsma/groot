@@ -14,9 +14,9 @@ import (
 
 	"groot/internal/agent"
 	"groot/internal/connectedapp"
-	"groot/internal/connectorinstance"
-	"groot/internal/connectors/registry"
+	"groot/internal/connection"
 	"groot/internal/functiondestination"
+	"groot/internal/integrations/registry"
 	"groot/internal/schema"
 	"groot/internal/tenant"
 )
@@ -27,7 +27,7 @@ type Subscription struct {
 	ConnectedAppID         *uuid.UUID      `json:"connected_app_id,omitempty"`
 	DestinationType        string          `json:"destination_type"`
 	FunctionDestinationID  *uuid.UUID      `json:"function_destination_id,omitempty"`
-	ConnectorInstanceID    *uuid.UUID      `json:"connector_instance_id,omitempty"`
+	ConnectionID           *uuid.UUID      `json:"connection_id,omitempty"`
 	AgentID                *uuid.UUID      `json:"agent_id,omitempty"`
 	SessionKeyTemplate     *string         `json:"session_key_template,omitempty"`
 	SessionCreateIfMissing bool            `json:"session_create_if_missing"`
@@ -48,7 +48,7 @@ type Record struct {
 	ConnectedAppID         *uuid.UUID
 	DestinationType        string
 	FunctionDestinationID  *uuid.UUID
-	ConnectorInstanceID    *uuid.UUID
+	ConnectionID           *uuid.UUID
 	AgentID                *uuid.UUID
 	SessionKeyTemplate     *string
 	SessionCreateIfMissing bool
@@ -67,21 +67,21 @@ var (
 	ErrInvalidEventType            = errors.New("event_type is required")
 	ErrConnectedAppNotFound        = errors.New("connected app not found")
 	ErrSubscriptionNotFound        = errors.New("subscription not found")
-	ErrInvalidDestinationType      = errors.New("destination_type must be webhook, function, or connector")
+	ErrInvalidDestinationType      = errors.New("destination_type must be webhook, function, or connection")
 	ErrFunctionDestinationNotFound = errors.New("function destination not found")
-	ErrConnectorInstanceNotFound   = errors.New("connector instance not found")
-	ErrInvalidOperation            = errors.New("operation is required for connector subscriptions")
+	ErrConnectionNotFound          = errors.New("connection not found")
+	ErrInvalidOperation            = errors.New("operation is required for connection subscriptions")
 	ErrInvalidOperationParams      = errors.New("operation_params are invalid")
-	ErrGlobalConnectorNotAllowed   = errors.New("global connector instances are disabled")
-	ErrConnectorInstanceForbidden  = errors.New("connector instance does not belong to tenant")
+	ErrGlobalConnectionNotAllowed  = errors.New("global connections are disabled")
+	ErrConnectionForbidden         = errors.New("connection does not belong to tenant")
 )
 
 const (
-	StatusActive             = "active"
-	StatusPaused             = "paused"
-	DestinationTypeWebhook   = "webhook"
-	DestinationTypeFunction  = "function"
-	DestinationTypeConnector = "connector"
+	StatusActive              = "active"
+	StatusPaused              = "paused"
+	DestinationTypeWebhook    = "webhook"
+	DestinationTypeFunction   = "function"
+	DestinationTypeConnection = "connection"
 )
 
 type Store interface {
@@ -106,15 +106,15 @@ type FunctionDestinationStore interface {
 	Get(context.Context, tenant.ID, uuid.UUID) (functiondestination.Destination, error)
 }
 
-type ConnectorInstanceStore interface {
-	GetConnectorInstance(context.Context, tenant.ID, uuid.UUID) (connectorinstance.Instance, error)
+type ConnectionStore interface {
+	GetConnection(context.Context, tenant.ID, uuid.UUID) (connection.Instance, error)
 }
 
 type Service struct {
 	store                Store
 	connectedApps        ConnectedAppStore
 	functionDestinations FunctionDestinationStore
-	connectorInstances   ConnectorInstanceStore
+	connections          ConnectionStore
 	agents               AgentStore
 	allowGlobalInstances bool
 	now                  func() time.Time
@@ -157,12 +157,12 @@ func WithAgentStore(store AgentStore) Option {
 	}
 }
 
-func NewService(store Store, connectedApps ConnectedAppStore, functionDestinations FunctionDestinationStore, connectorInstances ConnectorInstanceStore, allowGlobalInstances bool, options ...Option) *Service {
+func NewService(store Store, connectedApps ConnectedAppStore, functionDestinations FunctionDestinationStore, connections ConnectionStore, allowGlobalInstances bool, options ...Option) *Service {
 	service := &Service{
 		store:                store,
 		connectedApps:        connectedApps,
 		functionDestinations: functionDestinations,
-		connectorInstances:   connectorInstances,
+		connections:          connections,
 		allowGlobalInstances: allowGlobalInstances,
 		now:                  func() time.Time { return time.Now().UTC() },
 	}
@@ -177,8 +177,8 @@ type Result struct {
 	Warnings     []string
 }
 
-func (s *Service) Create(ctx context.Context, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Result, error) {
-	record, warnings, err := s.buildRecord(ctx, uuid.New(), "", tenantID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, agentID, sessionKeyTemplate, sessionCreateIfMissing, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
+func (s *Service) Create(ctx context.Context, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectionID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Result, error) {
+	record, warnings, err := s.buildRecord(ctx, uuid.New(), "", tenantID, destinationType, connectedAppID, functionDestinationID, connectionID, agentID, sessionKeyTemplate, sessionCreateIfMissing, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
 	if err != nil {
 		return Result{}, err
 	}
@@ -189,7 +189,7 @@ func (s *Service) Create(ctx context.Context, tenantID tenant.ID, destinationTyp
 	return Result{Subscription: sub, Warnings: warnings}, nil
 }
 
-func (s *Service) Update(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Result, error) {
+func (s *Service) Update(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectionID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Result, error) {
 	existing, err := s.store.GetSubscription(ctx, tenantID, subscriptionID)
 	if err != nil {
 		if errors.Is(err, ErrSubscriptionNotFound) {
@@ -197,7 +197,7 @@ func (s *Service) Update(ctx context.Context, tenantID tenant.ID, subscriptionID
 		}
 		return Result{}, fmt.Errorf("get subscription: %w", err)
 	}
-	record, warnings, err := s.buildRecord(ctx, subscriptionID, existing.Status, tenantID, destinationType, connectedAppID, functionDestinationID, connectorInstanceID, agentID, sessionKeyTemplate, sessionCreateIfMissing, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
+	record, warnings, err := s.buildRecord(ctx, subscriptionID, existing.Status, tenantID, destinationType, connectedAppID, functionDestinationID, connectionID, agentID, sessionKeyTemplate, sessionCreateIfMissing, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
 	if err != nil {
 		return Result{}, err
 	}
@@ -219,7 +219,7 @@ func (s *Service) AdminList(ctx context.Context, tenantID *tenant.ID, eventType,
 	return subs, nil
 }
 
-func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus string, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectorInstanceID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Record, []string, error) {
+func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus string, tenantID tenant.ID, destinationType string, connectedAppID *uuid.UUID, functionDestinationID *uuid.UUID, connectionID *uuid.UUID, agentID *uuid.UUID, sessionKeyTemplate *string, sessionCreateIfMissing bool, operation *string, operationParams json.RawMessage, filter json.RawMessage, eventType string, eventSource *string, emitSuccessEvent bool, emitFailureEvent bool) (Record, []string, error) {
 	trimmedType := strings.TrimSpace(eventType)
 	if trimmedType == "" {
 		return Record{}, nil, ErrInvalidEventType
@@ -275,30 +275,44 @@ func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus 
 			}
 			return Record{}, nil, fmt.Errorf("get function destination: %w", err)
 		}
-	case DestinationTypeConnector:
-		if connectorInstanceID == nil {
-			return Record{}, nil, ErrConnectorInstanceNotFound
-		}
-		instance, err := s.connectorInstances.GetConnectorInstance(ctx, tenantID, *connectorInstanceID)
-		if err != nil {
-			if errors.Is(err, connectorinstance.ErrNotFound) {
-				return Record{}, nil, ErrConnectorInstanceNotFound
-			}
-			return Record{}, nil, fmt.Errorf("get connector instance: %w", err)
-		}
-		if instance.Scope == connectorinstance.ScopeTenant {
-			if instance.OwnerTenantID == nil || *instance.OwnerTenantID != uuid.UUID(tenantID) {
-				return Record{}, nil, ErrConnectorInstanceForbidden
-			}
-		}
-		if instance.Scope == connectorinstance.ScopeGlobal && instance.ConnectorName != connectorinstance.ConnectorNameLLM && !s.allowGlobalInstances {
-			return Record{}, nil, ErrGlobalConnectorNotAllowed
-		}
+	case DestinationTypeConnection:
 		normalizedOperation := normalizeOperation(operation)
 		if normalizedOperation == nil {
 			return Record{}, nil, ErrInvalidOperation
 		}
-		normalizedParams, err := validateConnectorOperation(instance, *normalizedOperation, operationParams)
+		var err error
+		targetIntegration := ""
+		var instance connection.Instance
+		if connectionID != nil {
+			instance, err = s.connections.GetConnection(ctx, tenantID, *connectionID)
+			if err != nil {
+				if errors.Is(err, connection.ErrNotFound) {
+					return Record{}, nil, ErrConnectionNotFound
+				}
+				return Record{}, nil, fmt.Errorf("get connection: %w", err)
+			}
+			if instance.Scope == connection.ScopeTenant {
+				if instance.OwnerTenantID == nil || *instance.OwnerTenantID != uuid.UUID(tenantID) {
+					return Record{}, nil, ErrConnectionForbidden
+				}
+			}
+			if instance.Scope == connection.ScopeGlobal && instance.IntegrationName != connection.IntegrationNameLLM && !s.allowGlobalInstances {
+				return Record{}, nil, ErrGlobalConnectionNotAllowed
+			}
+			targetIntegration = instance.IntegrationName
+		} else {
+			var ok bool
+			targetIntegration, ok = registry.FindIntegrationByOperation(*normalizedOperation)
+			if !ok {
+				return Record{}, nil, ErrConnectionNotFound
+			}
+		}
+		var normalizedParams json.RawMessage
+		if connectionID != nil {
+			normalizedParams, err = validateConnectionOperation(instance, *normalizedOperation, operationParams)
+		} else {
+			normalizedParams, err = validateConnectionOperationForIntegration(targetIntegration, *normalizedOperation, operationParams)
+		}
 		if err != nil {
 			return Record{}, nil, err
 		}
@@ -314,7 +328,7 @@ func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus 
 				}
 			}
 		}
-		if instance.ConnectorName == connectorinstance.ConnectorNameLLM && *normalizedOperation == "agent" {
+		if targetIntegration == connection.IntegrationNameLLM && *normalizedOperation == "agent" {
 			isAgentSubscription = true
 			if agentID == nil {
 				return Record{}, nil, ErrInvalidOperationParams
@@ -375,7 +389,7 @@ func (s *Service) buildRecord(ctx context.Context, id uuid.UUID, existingStatus 
 		ConnectedAppID:         connectedAppID,
 		DestinationType:        normalizedDestinationType,
 		FunctionDestinationID:  functionDestinationID,
-		ConnectorInstanceID:    connectorInstanceID,
+		ConnectionID:           connectionID,
 		AgentID:                agentID,
 		SessionKeyTemplate:     normalizeSource(sessionKeyTemplate),
 		SessionCreateIfMissing: sessionCreateIfMissing,
@@ -489,12 +503,20 @@ type notionAppendBlockParams struct {
 
 var placeholderPattern = regexp.MustCompile(`\{\{([^{}]+)\}\}`)
 
-func validateConnectorOperation(instance connectorinstance.Instance, operation string, operationParams json.RawMessage) (json.RawMessage, error) {
+func validateConnectionOperationForIntegration(integrationName string, operation string, operationParams json.RawMessage) (json.RawMessage, error) {
+	return validateConnectionOperationWithConfig(integrationName, nil, operation, operationParams)
+}
+
+func validateConnectionOperation(instance connection.Instance, operation string, operationParams json.RawMessage) (json.RawMessage, error) {
+	return validateConnectionOperationWithConfig(instance.IntegrationName, instance.Config, operation, operationParams)
+}
+
+func validateConnectionOperationWithConfig(integrationName string, config json.RawMessage, operation string, operationParams json.RawMessage) (json.RawMessage, error) {
 	if len(operationParams) == 0 {
 		operationParams = json.RawMessage(`{}`)
 	}
-	switch instance.ConnectorName {
-	case connectorinstance.ConnectorNameSlack:
+	switch integrationName {
+	case connection.IntegrationNameSlack:
 		if operation != "post_message" && operation != "create_thread_reply" {
 			return nil, ErrInvalidOperation
 		}
@@ -503,9 +525,11 @@ func validateConnectorOperation(instance connectorinstance.Instance, operation s
 			return nil, ErrInvalidOperationParams
 		}
 
-		var cfg connectorinstance.SlackConfig
-		if err := json.Unmarshal(instance.Config, &cfg); err != nil {
-			return nil, ErrInvalidOperationParams
+		var cfg connection.SlackConfig
+		if len(config) > 0 && string(config) != "null" {
+			if err := json.Unmarshal(config, &cfg); err != nil {
+				return nil, ErrInvalidOperationParams
+			}
 		}
 		if strings.TrimSpace(params.Channel) == "" && strings.TrimSpace(cfg.DefaultChannel) == "" {
 			return nil, ErrInvalidOperationParams
@@ -524,7 +548,7 @@ func validateConnectorOperation(instance connectorinstance.Instance, operation s
 			return nil, ErrInvalidOperationParams
 		}
 		return normalized, nil
-	case connectorinstance.ConnectorNameResend:
+	case connection.IntegrationNameResend:
 		if operation != "send_email" {
 			return nil, ErrInvalidOperation
 		}
@@ -543,17 +567,17 @@ func validateConnectorOperation(instance connectorinstance.Instance, operation s
 			return nil, ErrInvalidOperationParams
 		}
 		return normalized, nil
-	case connectorinstance.ConnectorNameNotion:
+	case connection.IntegrationNameNotion:
 		return validateNotionOperation(operation, operationParams)
-	case connectorinstance.ConnectorNameLLM:
+	case connection.IntegrationNameLLM:
 		return validateLLMOperation(operation, operationParams)
 	default:
-		return validateCustomProviderOperation(instance.ConnectorName, operation, operationParams)
+		return validateCustomIntegrationOperation(integrationName, operation, operationParams)
 	}
 }
 
-func validateCustomProviderOperation(connectorName string, operation string, operationParams json.RawMessage) (json.RawMessage, error) {
-	registered := registry.GetProvider(connectorName)
+func validateCustomIntegrationOperation(integrationName string, operation string, operationParams json.RawMessage) (json.RawMessage, error) {
+	registered := registry.GetIntegration(integrationName)
 	if registered == nil {
 		return nil, ErrInvalidOperation
 	}
@@ -748,11 +772,20 @@ func validateTemplates(value any) error {
 func validateTemplateString(text string) error {
 	matches := placeholderPattern.FindAllStringSubmatch(text, -1)
 	allowed := map[string]struct{}{
-		"event_id":  {},
-		"tenant_id": {},
-		"type":      {},
-		"source":    {},
-		"timestamp": {},
+		"event_id":                    {},
+		"tenant_id":                   {},
+		"type":                        {},
+		"source":                      {},
+		"timestamp":                   {},
+		"source.kind":                 {},
+		"source.integration":          {},
+		"source.connection_id":        {},
+		"source.connection_name":      {},
+		"source.external_account_id":  {},
+		"lineage.integration":         {},
+		"lineage.connection_id":       {},
+		"lineage.connection_name":     {},
+		"lineage.external_account_id": {},
 	}
 	for _, match := range matches {
 		key := strings.TrimSpace(match[1])

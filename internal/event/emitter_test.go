@@ -60,18 +60,22 @@ func TestEmitResultEventPublishesAndLinks(t *testing.T) {
 			EventID:    inputEventID,
 			TenantID:   tenantID,
 			Type:       "resend.email.received.v1",
-			Source:     "resend",
+			Source: Source{
+				Kind:         SourceKindExternal,
+				Integration:  "resend",
+				ConnectionID: ptrUUID(uuid.MustParse("55555555-5555-5555-5555-555555555555")),
+			},
 			SourceKind: SourceKindExternal,
 			ChainDepth: 0,
 			Timestamp:  time.Date(2026, 3, 6, 11, 0, 0, 0, time.UTC),
 			Payload:    json.RawMessage(`{"text":"hello"}`),
 		},
-		Connector:  "llm",
-		Operation:  "summarize",
-		Status:     ResultStatusSucceeded,
-		Output:     map[string]any{"text": "summary"},
-		ExternalID: &externalID,
-		HTTPStatus: &httpStatus,
+		Integration: "llm",
+		Operation:   "summarize",
+		Status:      ResultStatusSucceeded,
+		Output:      map[string]any{"text": "summary"},
+		ExternalID:  &externalID,
+		HTTPStatus:  &httpStatus,
 	})
 	if err != nil {
 		t.Fatalf("EmitResultEvent() error = %v", err)
@@ -92,6 +96,9 @@ func TestEmitResultEventPublishesAndLinks(t *testing.T) {
 	if event.SourceKind != SourceKindInternal {
 		t.Fatalf("event.SourceKind = %q", event.SourceKind)
 	}
+	if event.Lineage == nil || event.Lineage.ConnectionID == nil {
+		t.Fatal("expected result event lineage to preserve input connection")
+	}
 	if event.ChainDepth != 1 {
 		t.Fatalf("event.ChainDepth = %d", event.ChainDepth)
 	}
@@ -110,15 +117,15 @@ func TestEmitResultEventSkipsWhenChainDepthExceeded(t *testing.T) {
 			EventID:    uuid.New(),
 			TenantID:   uuid.New(),
 			Type:       "llm.summarize.completed.v1",
-			Source:     "llm",
+			Source:     Source{Kind: SourceKindInternal, Integration: "llm"},
 			SourceKind: SourceKindInternal,
 			ChainDepth: 1,
 			Timestamp:  time.Now().UTC(),
 			Payload:    json.RawMessage(`{}`),
 		},
-		Connector: "llm",
-		Operation: "summarize",
-		Status:    ResultStatusSucceeded,
+		Integration: "llm",
+		Operation:   "summarize",
+		Status:      ResultStatusSucceeded,
 	})
 	if err != nil {
 		t.Fatalf("EmitResultEvent() error = %v", err)
@@ -132,4 +139,8 @@ func TestEmitResultEventSkipsWhenChainDepthExceeded(t *testing.T) {
 	if metrics.emitted != 0 || metrics.failures != 0 {
 		t.Fatalf("metrics = %+v", metrics)
 	}
+}
+
+func ptrUUID(id uuid.UUID) *uuid.UUID {
+	return &id
 }

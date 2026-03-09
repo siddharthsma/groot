@@ -9,7 +9,7 @@ Inbound: - Stripe
 
 Outbound: - Notion
 
-Both connectors must operate with tenant-scoped connector instances.
+Both connectors must operate with tenant-scoped connections.
 
 No global scope allowed for these connectors.
 
@@ -96,7 +96,7 @@ Webhook signature verification required.
 
 ------------------------------------------------------------------------
 
-# Stripe Connector Instance Configuration
+# Stripe Connection Configuration
 
 Stored in:
 
@@ -214,7 +214,7 @@ create_page append_block
 
 ------------------------------------------------------------------------
 
-# Notion Connector Instance Configuration
+# Notion Connection Configuration
 
 Stored in:
 

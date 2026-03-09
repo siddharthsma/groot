@@ -29,8 +29,9 @@ type Client struct {
 type Event struct {
 	EventID    string          `json:"event_id"`
 	Type       string          `json:"type"`
-	Source     string          `json:"source"`
+	Source     map[string]any  `json:"source"`
 	SourceKind string          `json:"source_kind"`
+	Lineage    map[string]any  `json:"lineage,omitempty"`
 	ChainDepth int             `json:"chain_depth"`
 	Payload    json.RawMessage `json:"payload"`
 }
@@ -43,7 +44,7 @@ type Request struct {
 	SessionID      string          `json:"session_id"`
 	SessionKey     string          `json:"session_key"`
 	Instructions   string          `json:"instructions"`
-	Provider       string          `json:"provider,omitempty"`
+	Integration    string          `json:"integration,omitempty"`
 	Model          string          `json:"model,omitempty"`
 	AllowedTools   []string        `json:"allowed_tools"`
 	ToolBindings   json.RawMessage `json:"tool_bindings"`
