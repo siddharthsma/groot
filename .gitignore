@@ -1,0 +1,23 @@
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Editor/IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Frontend local/build artifacts
+ui/.next/
+ui/node_modules/
+
+# Local env overrides
+.env
+.env.local
+ui/.env.local
+
+# Test and temporary artifacts
+coverage/
+*.log
