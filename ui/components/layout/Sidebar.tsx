@@ -1,43 +1,49 @@
-import Link from "next/link";
-import { Bot, Boxes, Cable, Workflow } from "lucide-react";
+"use client";
+
+import { Orbit, Sparkles } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { SidebarNav } from "@/components/layout/SidebarNav";
+import { TenantBadge } from "@/components/layout/TenantBadge";
 
-const items = [
-  { href: "/", label: "Overview", icon: Workflow },
-  { href: "/integrations", label: "Integrations", icon: Boxes },
-  { href: "/connections", label: "Connections", icon: Boxes },
-  { href: "/events", label: "Events", icon: Cable },
-  { href: "/agents", label: "Agents", icon: Bot },
-];
+type SidebarProps = {
+  compact?: boolean;
+};
 
-export function Sidebar() {
+export function Sidebar({ compact = false }: SidebarProps) {
   return (
-    <aside className="border-r border-slate-200/80 bg-white/80 px-4 py-5 backdrop-blur lg:px-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-[0.22em] text-slate-500">
-            Groot
-          </p>
-          <h1 className="mt-1 text-xl font-semibold tracking-tight text-slate-950">
-            UI Workspace
-          </h1>
+    <aside className="flex h-full flex-col gap-6 border-r border-border/60 bg-sidebar/88 px-4 py-5 backdrop-blur-2xl lg:px-5">
+      <div className="space-y-4">
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/18 via-primary/6 to-accent/10 text-primary shadow-[var(--shadow-glow-soft)]">
+              <Orbit className="h-5 w-5" />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.34em] text-muted-foreground/80">
+                Groot
+              </p>
+              <h1 className="text-lg font-bold tracking-[-0.05em] text-foreground">
+                Cosmic Shell
+              </h1>
+            </div>
+          </div>
+          <Badge className="gap-1 border-primary/25 bg-primary/12 text-primary">
+            <Sparkles className="h-3 w-3" />
+            Phase 38B
+          </Badge>
         </div>
-        <Badge variant="secondary" className="border border-slate-200 bg-slate-50">
-          Phase 32
-        </Badge>
+        {!compact && <TenantBadge />}
       </div>
-      <nav className="mt-8 space-y-2">
-        {items.map(({ href, label, icon: Icon }) => (
-          <Link
-            key={href}
-            href={href}
-            className="flex items-center gap-3 rounded-xl border border-transparent px-3 py-2 text-sm font-medium text-slate-600 transition hover:border-slate-200 hover:bg-slate-50 hover:text-slate-950"
-          >
-            <Icon className="h-4 w-4" />
-            {label}
-          </Link>
-        ))}
-      </nav>
+      <SidebarNav />
+      <div className="mt-auto rounded-[calc(var(--radius-panel)-0.125rem)] border border-border/60 bg-surface-2/70 p-4">
+        <p className="text-sm font-semibold tracking-[-0.02em] text-foreground">
+          The system is ready to grow
+        </p>
+        <p className="mt-2 text-[13px] leading-6 text-muted-foreground">
+          Navigation, theme tokens, and responsive layout are stable. Product
+          content will grow into these surfaces in later phases.
+        </p>
+      </div>
     </aside>
   );
 }

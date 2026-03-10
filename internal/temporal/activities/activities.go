@@ -79,6 +79,8 @@ type Store interface {
 	MarkDeliveryJobRetryableFailure(context.Context, uuid.UUID, string, *int) error
 	MarkDeliveryJobDeadLetter(context.Context, uuid.UUID, string, *int) error
 	MarkDeliveryJobFailed(context.Context, uuid.UUID, string, *int) error
+	MarkWorkflowDeliverySucceeded(context.Context, uuid.UUID, time.Time) error
+	MarkWorkflowDeliveryFailed(context.Context, uuid.UUID, time.Time, string) error
 	CreateAgentRun(context.Context, agent.RunRecord) (agent.Run, error)
 	CreateAgentStep(context.Context, agent.StepRecord) error
 	MarkAgentRunSucceeded(context.Context, uuid.UUID, int, time.Time) error
@@ -137,6 +139,8 @@ type DeliveryJob struct {
 	SubscriptionID string
 	EventID        string
 	ResultEventID  string
+	WorkflowRunID  string
+	WorkflowNodeID string
 }
 
 type Subscription struct {
@@ -146,6 +150,7 @@ type Subscription struct {
 	FunctionDestinationID  string
 	ConnectionID           string
 	AgentID                string
+	AgentVersionID         string
 	SessionKeyTemplate     string
 	SessionCreateIfMissing bool
 	Operation              string
@@ -190,15 +195,17 @@ type FunctionResult struct {
 }
 
 type Event struct {
-	EventID    string           `json:"event_id"`
-	TenantID   string           `json:"tenant_id"`
-	Type       string           `json:"type"`
-	Source     eventpkg.Source  `json:"source"`
-	SourceKind string           `json:"source_kind"`
-	Lineage    *eventpkg.Lineage `json:"lineage,omitempty"`
-	ChainDepth int              `json:"chain_depth"`
-	Timestamp  time.Time        `json:"timestamp"`
-	Payload    json.RawMessage  `json:"payload"`
+	EventID        string            `json:"event_id"`
+	TenantID       string            `json:"tenant_id"`
+	WorkflowRunID  string            `json:"workflow_run_id,omitempty"`
+	WorkflowNodeID string            `json:"workflow_node_id,omitempty"`
+	Type           string            `json:"type"`
+	Source         eventpkg.Source   `json:"source"`
+	SourceKind     string            `json:"source_kind"`
+	Lineage        *eventpkg.Lineage `json:"lineage,omitempty"`
+	ChainDepth     int               `json:"chain_depth"`
+	Timestamp      time.Time         `json:"timestamp"`
+	Payload        json.RawMessage   `json:"payload"`
 }
 
 type ResultEventRequest struct {
@@ -207,6 +214,8 @@ type ResultEventRequest struct {
 	SubscriptionID        string
 	InputEventID          string
 	ExistingResultEventID string
+	WorkflowRunID         string
+	WorkflowNodeID        string
 	InputEvent            Event
 	IntegrationName       string
 	Operation             string
@@ -269,6 +278,8 @@ func (a *Activities) LoadDeliveryJob(ctx context.Context, deliveryJobID string) 
 		SubscriptionID: job.SubscriptionID.String(),
 		EventID:        job.EventID.String(),
 		ResultEventID:  optionalUUIDString(job.ResultEventID),
+		WorkflowRunID:  optionalUUIDString(job.WorkflowRunID),
+		WorkflowNodeID: job.WorkflowNodeID,
 	}, nil
 }
 
@@ -288,6 +299,7 @@ func (a *Activities) LoadSubscription(ctx context.Context, subscriptionID string
 		FunctionDestinationID:  optionalUUIDString(sub.FunctionDestinationID),
 		ConnectionID:           optionalUUIDString(sub.ConnectionID),
 		AgentID:                optionalUUIDString(sub.AgentID),
+		AgentVersionID:         optionalUUIDString(sub.AgentVersionID),
 		SessionKeyTemplate:     optionalString(sub.SessionKeyTemplate),
 		SessionCreateIfMissing: sub.SessionCreateIfMissing,
 		Operation:              optionalString(sub.Operation),
@@ -365,15 +377,17 @@ func (a *Activities) LoadEvent(ctx context.Context, eventID string) (Event, erro
 		return Event{}, err
 	}
 	return Event{
-		EventID:    event.EventID.String(),
-		TenantID:   event.TenantID.String(),
-		Type:       event.Type,
-		Source:     event.Source,
-		SourceKind: event.SourceKind,
-		Lineage:    event.Lineage,
-		ChainDepth: event.ChainDepth,
-		Timestamp:  event.Timestamp,
-		Payload:    event.Payload,
+		EventID:        event.EventID.String(),
+		TenantID:       event.TenantID.String(),
+		WorkflowRunID:  optionalUUIDString(event.WorkflowRunID),
+		WorkflowNodeID: event.WorkflowNodeID,
+		Type:           event.Type,
+		Source:         event.Source,
+		SourceKind:     event.SourceKind,
+		Lineage:        event.Lineage,
+		ChainDepth:     event.ChainDepth,
+		Timestamp:      event.Timestamp,
+		Payload:        event.Payload,
 	}, nil
 }
 
@@ -581,15 +595,17 @@ func (a *Activities) ExecuteConnection(ctx context.Context, deliveryJobID string
 		Config:    instanceConfig,
 		Params:    renderOperationParams(operationParams, event),
 		Event: eventpkg.Event{
-			EventID:    eventID,
-			TenantID:   parsedTenantID,
-			Type:       event.Type,
-			Source:     event.Source,
-			SourceKind: event.SourceKind,
-			Lineage:    event.Lineage,
-			ChainDepth: event.ChainDepth,
-			Timestamp:  event.Timestamp,
-			Payload:    event.Payload,
+			EventID:        eventID,
+			TenantID:       parsedTenantID,
+			WorkflowRunID:  parseOptionalUUIDString(event.WorkflowRunID),
+			WorkflowNodeID: event.WorkflowNodeID,
+			Type:           event.Type,
+			Source:         event.Source,
+			SourceKind:     event.SourceKind,
+			Lineage:        event.Lineage,
+			ChainDepth:     event.ChainDepth,
+			Timestamp:      event.Timestamp,
+			Payload:        event.Payload,
 		},
 		HTTPClient: a.httpClient,
 		Runtime:    a.integrationRuntime,
@@ -780,16 +796,20 @@ func (a *Activities) EmitResultEvent(ctx context.Context, req ResultEventRequest
 		SubscriptionID:      subscriptionID,
 		DeliveryJobID:       deliveryJobID,
 		ExistingResultEvent: resultEventID,
+		WorkflowRunID:       optionalParsedUUID(req.WorkflowRunID),
+		WorkflowNodeID:      strings.TrimSpace(req.WorkflowNodeID),
 		InputEvent: eventpkg.Event{
-			EventID:    eventID,
-			TenantID:   tenantID,
-			Type:       req.InputEvent.Type,
-			Source:     req.InputEvent.Source,
-			SourceKind: req.InputEvent.SourceKind,
-			Lineage:    req.InputEvent.Lineage,
-			ChainDepth: req.InputEvent.ChainDepth,
-			Timestamp:  req.InputEvent.Timestamp,
-			Payload:    req.InputEvent.Payload,
+			EventID:        eventID,
+			TenantID:       tenantID,
+			WorkflowRunID:  optionalParsedUUID(req.InputEvent.WorkflowRunID),
+			WorkflowNodeID: req.InputEvent.WorkflowNodeID,
+			Type:           req.InputEvent.Type,
+			Source:         req.InputEvent.Source,
+			SourceKind:     req.InputEvent.SourceKind,
+			Lineage:        req.InputEvent.Lineage,
+			ChainDepth:     req.InputEvent.ChainDepth,
+			Timestamp:      req.InputEvent.Timestamp,
+			Payload:        req.InputEvent.Payload,
 		},
 		Integration:    req.IntegrationName,
 		Operation:      req.Operation,
@@ -816,9 +836,11 @@ func (a *Activities) MarkSucceeded(ctx context.Context, deliveryJobID string, ex
 	if err != nil {
 		return err
 	}
-	if err := a.store.MarkDeliveryJobSucceeded(ctx, id, time.Now().UTC(), externalID, lastStatusCode); err != nil {
+	completedAt := time.Now().UTC()
+	if err := a.store.MarkDeliveryJobSucceeded(ctx, id, completedAt, externalID, lastStatusCode); err != nil {
 		return err
 	}
+	_ = a.store.MarkWorkflowDeliverySucceeded(ctx, id, completedAt)
 	if a.metrics != nil {
 		a.metrics.IncDeliverySucceeded()
 	}
@@ -847,6 +869,7 @@ func (a *Activities) MarkDeadLetter(ctx context.Context, deliveryJobID string, l
 	if err := a.store.MarkDeliveryJobDeadLetter(ctx, id, lastError, lastStatusCode); err != nil {
 		return err
 	}
+	_ = a.store.MarkWorkflowDeliveryFailed(ctx, id, time.Now().UTC(), lastError)
 	if a.metrics != nil {
 		a.metrics.IncDeliveryDeadLetter()
 		if connectorName != "" && operation != "" {
@@ -874,6 +897,7 @@ func (a *Activities) MarkFailed(ctx context.Context, deliveryJobID string, lastE
 	if err := a.store.MarkDeliveryJobFailed(ctx, id, lastError, lastStatusCode); err != nil {
 		return err
 	}
+	_ = a.store.MarkWorkflowDeliveryFailed(ctx, id, time.Now().UTC(), lastError)
 	if a.metrics != nil {
 		a.metrics.IncDeliveryFailed()
 	}
@@ -923,6 +947,10 @@ func optionalParsedUUID(value string) *uuid.UUID {
 		return nil
 	}
 	return &id
+}
+
+func parseOptionalUUIDString(value string) *uuid.UUID {
+	return optionalParsedUUID(value)
 }
 
 func uuidFromString(value string) uuid.UUID {

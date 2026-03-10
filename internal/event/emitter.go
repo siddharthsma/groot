@@ -47,6 +47,8 @@ type EmitRequest struct {
 	SubscriptionID      uuid.UUID
 	DeliveryJobID       uuid.UUID
 	ExistingResultEvent *uuid.UUID
+	WorkflowRunID       *uuid.UUID
+	WorkflowNodeID      string
 	InputEvent          Event
 	Integration         string
 	Operation           string
@@ -143,6 +145,8 @@ func (e *Emitter) EmitResultEvent(ctx context.Context, req EmitRequest) error {
 	evt := Event{
 		EventID:        uuid.New(),
 		TenantID:       req.InputEvent.TenantID,
+		WorkflowRunID:  req.WorkflowRunID,
+		WorkflowNodeID: strings.TrimSpace(req.WorkflowNodeID),
 		Type:           fullName,
 		Source:         NormalizeSource(Source{Kind: SourceKindInternal, Integration: req.Integration}, SourceKindInternal),
 		SourceKind:     SourceKindInternal,

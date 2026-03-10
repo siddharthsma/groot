@@ -47,7 +47,7 @@ type AgentToolExecutionResult struct {
 	Usage       outbound.Usage  `json:"usage"`
 }
 
-func (a *Activities) StartAgentRun(ctx context.Context, tenantID string, inputEventID string, subscriptionID string) (string, error) {
+func (a *Activities) StartAgentRun(ctx context.Context, tenantID string, inputEventID string, subscriptionID string, workflowRunID string, workflowNodeID string, agentVersionID string) (string, error) {
 	tID, err := uuid.Parse(tenantID)
 	if err != nil {
 		return "", err
@@ -65,6 +65,9 @@ func (a *Activities) StartAgentRun(ctx context.Context, tenantID string, inputEv
 		TenantID:       tID,
 		InputEventID:   eventID,
 		SubscriptionID: subID,
+		WorkflowRunID:  optionalParsedUUID(workflowRunID),
+		WorkflowNodeID: optionalStringPtr(workflowNodeID),
+		AgentVersionID: optionalParsedUUID(agentVersionID),
 		Status:         agent.StatusRunning,
 		Steps:          0,
 		StartedAt:      time.Now().UTC(),

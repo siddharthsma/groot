@@ -33,6 +33,7 @@ var (
 	ErrSessionKeyEmpty            = errors.New("session key resolved empty")
 	ErrSessionKeyTooLong          = errors.New("session key exceeds 512 characters")
 	ErrSessionUnavailable         = errors.New("agent session not found")
+	ErrVersionNotFound            = errors.New("agent version not found")
 )
 
 type Store interface {
@@ -40,6 +41,7 @@ type Store interface {
 	UpdateAgent(context.Context, uuid.UUID, tenant.ID, DefinitionRecord) (Definition, error)
 	GetAgent(context.Context, tenant.ID, uuid.UUID) (Definition, error)
 	ListAgents(context.Context, tenant.ID) ([]Definition, error)
+	ListAgentVersions(context.Context, tenant.ID, uuid.UUID) ([]Version, error)
 	DeleteAgent(context.Context, tenant.ID, uuid.UUID) error
 	CountActiveSubscriptionsForAgent(context.Context, tenant.ID, uuid.UUID) (int, error)
 	CountActiveSessionsForAgent(context.Context, tenant.ID, uuid.UUID) (int, error)
@@ -134,6 +136,17 @@ func (s *Service) List(ctx context.Context, tenantID tenant.ID) ([]Definition, e
 	records, err := s.store.ListAgents(ctx, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	return records, nil
+}
+
+func (s *Service) ListVersions(ctx context.Context, tenantID tenant.ID, agentID uuid.UUID) ([]Version, error) {
+	records, err := s.store.ListAgentVersions(ctx, tenantID, agentID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("list agent versions: %w", err)
 	}
 	return records, nil
 }

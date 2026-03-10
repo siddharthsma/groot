@@ -26,6 +26,8 @@ type Lineage struct {
 type Event struct {
 	EventID        uuid.UUID       `json:"event_id"`
 	TenantID       uuid.UUID       `json:"tenant_id"`
+	WorkflowRunID  *uuid.UUID      `json:"workflow_run_id,omitempty"`
+	WorkflowNodeID string          `json:"workflow_node_id,omitempty"`
 	Type           string          `json:"type"`
 	Source         Source          `json:"source"`
 	SourceKind     string          `json:"source_kind"`

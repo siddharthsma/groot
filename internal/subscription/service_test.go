@@ -26,18 +26,30 @@ type stubStore struct {
 }
 
 func (s stubStore) CreateSubscription(ctx context.Context, record Record) (Subscription, error) {
+	if s.createFn == nil {
+		return Subscription{}, nil
+	}
 	return s.createFn(ctx, record)
 }
 
 func (s stubStore) UpdateSubscription(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, record Record) (Subscription, error) {
+	if s.updateFn == nil {
+		return Subscription{}, ErrSubscriptionNotFound
+	}
 	return s.updateFn(ctx, tenantID, subscriptionID, record)
 }
 
 func (s stubStore) GetSubscription(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID) (Subscription, error) {
+	if s.getFn == nil {
+		return Subscription{ID: subscriptionID, TenantID: uuid.UUID(tenantID)}, nil
+	}
 	return s.getFn(ctx, tenantID, subscriptionID)
 }
 
 func (s stubStore) ListSubscriptions(ctx context.Context, tenantID tenant.ID) ([]Subscription, error) {
+	if s.listFn == nil {
+		return nil, nil
+	}
 	return s.listFn(ctx, tenantID)
 }
 
@@ -49,10 +61,16 @@ func (s stubStore) ListSubscriptionsAdmin(ctx context.Context, tenantID *tenant.
 }
 
 func (s stubStore) ListMatchingSubscriptions(ctx context.Context, tenantID tenant.ID, eventType, eventSource string) ([]Subscription, error) {
+	if s.matchFn == nil {
+		return nil, nil
+	}
 	return s.matchFn(ctx, tenantID, eventType, eventSource)
 }
 
 func (s stubStore) SetSubscriptionStatus(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, status string) (Subscription, error) {
+	if s.setFn == nil {
+		return Subscription{}, ErrSubscriptionNotFound
+	}
 	return s.setFn(ctx, tenantID, subscriptionID, status)
 }
 

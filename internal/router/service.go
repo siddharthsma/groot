@@ -23,12 +23,18 @@ type Store interface {
 	CreateDeliveryJob(context.Context, delivery.JobRecord) (bool, error)
 }
 
+type WorkflowRuntime interface {
+	ProcessEvent(context.Context, eventpkg.Event) error
+	ScheduleSubscription(context.Context, eventpkg.Event, subscription.Subscription) (bool, error)
+}
+
 type Consumer struct {
-	reader  *kafka.Reader
-	store   Store
-	logger  *slog.Logger
-	metrics Metrics
-	now     func() time.Time
+	reader   *kafka.Reader
+	store    Store
+	workflow WorkflowRuntime
+	logger   *slog.Logger
+	metrics  Metrics
+	now      func() time.Time
 }
 
 type Metrics interface {
@@ -39,7 +45,7 @@ type Metrics interface {
 	IncSubscriptionFilterRejections()
 }
 
-func NewConsumer(brokers []string, groupID string, store Store, logger *slog.Logger, metrics Metrics) *Consumer {
+func NewConsumer(brokers []string, groupID string, store Store, workflow WorkflowRuntime, logger *slog.Logger, metrics Metrics) *Consumer {
 	if groupID == "" {
 		groupID = "groot-router"
 	}
@@ -50,10 +56,11 @@ func NewConsumer(brokers []string, groupID string, store Store, logger *slog.Log
 			GroupID:     groupID,
 			StartOffset: kafka.LastOffset,
 		}),
-		store:   store,
-		logger:  logger,
-		metrics: metrics,
-		now:     func() time.Time { return time.Now().UTC() },
+		store:    store,
+		workflow: workflow,
+		logger:   logger,
+		metrics:  metrics,
+		now:      func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -100,6 +107,11 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error 
 	if c.metrics != nil {
 		c.metrics.IncRouterEventsConsumed()
 	}
+	if c.workflow != nil {
+		if err := c.workflow.ProcessEvent(ctx, event); err != nil {
+			return fmt.Errorf("process workflow runtime event: %w", err)
+		}
+	}
 
 	matches, err := c.store.ListMatchingSubscriptions(ctx, event.TenantID, event.Type, event.SourceIntegration())
 	if err != nil {
@@ -107,6 +119,29 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafka.Message) error 
 	}
 
 	for _, sub := range matches {
+		if sub.ManagedByWorkflow {
+			if event.WorkflowRunID == nil {
+				continue
+			}
+			if c.workflow == nil {
+				continue
+			}
+			created, err := c.workflow.ScheduleSubscription(ctx, event, sub)
+			if err != nil {
+				return fmt.Errorf("schedule workflow subscription: %w", err)
+			}
+			if created {
+				if c.metrics != nil {
+					c.metrics.IncRouterMatches()
+				}
+				c.logger.Info("delivery_job_created",
+					slog.String("event_id", event.EventID.String()),
+					slog.String("tenant_id", event.TenantID.String()),
+					slog.String("subscription_id", sub.ID.String()),
+				)
+			}
+			continue
+		}
 		if len(sub.Filter) > 0 {
 			if c.metrics != nil {
 				c.metrics.IncSubscriptionFilterEvaluations()

@@ -10,16 +10,18 @@ import (
 
 func BuildTemplateReplacements(event Event) map[string]string {
 	replacements := map[string]string{
-		"{{event_id}}":                 event.EventID.String(),
-		"{{tenant_id}}":                event.TenantID.String(),
-		"{{type}}":                     event.Type,
-		"{{source}}":                   event.SourceIntegration(),
-		"{{source.kind}}":              event.Source.Kind,
-		"{{source.integration}}":       event.SourceIntegration(),
-		"{{source.connection_id}}":     optionalUUID(event.Source.ConnectionID),
-		"{{source.connection_name}}":   event.Source.ConnectionName,
+		"{{event_id}}":                   event.EventID.String(),
+		"{{tenant_id}}":                  event.TenantID.String(),
+		"{{workflow_run_id}}":            optionalUUID(event.WorkflowRunID),
+		"{{workflow_node_id}}":           event.WorkflowNodeID,
+		"{{type}}":                       event.Type,
+		"{{source}}":                     event.SourceIntegration(),
+		"{{source.kind}}":                event.Source.Kind,
+		"{{source.integration}}":         event.SourceIntegration(),
+		"{{source.connection_id}}":       optionalUUID(event.Source.ConnectionID),
+		"{{source.connection_name}}":     event.Source.ConnectionName,
 		"{{source.external_account_id}}": event.Source.ExternalAccountID,
-		"{{timestamp}}":                event.Timestamp.UTC().Format(time.RFC3339),
+		"{{timestamp}}":                  event.Timestamp.UTC().Format(time.RFC3339),
 	}
 	if event.Lineage != nil {
 		replacements["{{lineage.integration}}"] = event.Lineage.Integration

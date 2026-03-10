@@ -10,11 +10,11 @@ export function DataTableScaffold({
   description,
 }: DataTableScaffoldProps) {
   return (
-    <Card className="border-slate-200/80 bg-white/90 shadow-sm">
+    <Card className="shell-panel rounded-[var(--radius-panel)] border-border/70 bg-surface-1/88 shadow-[var(--shadow-panel)]">
       <CardHeader>
         <CardTitle>{title}</CardTitle>
       </CardHeader>
-      <CardContent className="text-sm leading-6 text-slate-600">
+      <CardContent className="text-sm leading-7 text-muted-foreground">
         {description}
       </CardContent>
     </Card>

@@ -18,9 +18,9 @@ func (d *DB) SaveEvent(ctx context.Context, evt eventpkg.Event) error {
 		INSERT INTO events (
 			event_id, tenant_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
 			lineage_integration, lineage_connection_id, lineage_connection_name, lineage_external_account_id,
-			chain_depth, timestamp, payload, schema_full_name, schema_version, created_at
+			chain_depth, timestamp, payload, schema_full_name, schema_version, workflow_run_id, workflow_node_id, created_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
 	`
 	var schemaVersion any
 	if evt.SchemaVersion > 0 {
@@ -44,6 +44,8 @@ func (d *DB) SaveEvent(ctx context.Context, evt eventpkg.Event) error {
 		[]byte(evt.Payload),
 		nullableString(evt.SchemaFullName),
 		schemaVersion,
+		evt.WorkflowRunID,
+		nullableString(evt.WorkflowNodeID),
 	); err != nil {
 		return fmt.Errorf("insert event: %w", err)
 	}
@@ -52,7 +54,7 @@ func (d *DB) SaveEvent(ctx context.Context, evt eventpkg.Event) error {
 
 func (d *DB) GetEvent(ctx context.Context, eventID uuid.UUID) (eventpkg.Event, error) {
 	const query = `
-		SELECT event_id, tenant_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
+		SELECT event_id, tenant_id, workflow_run_id, workflow_node_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
 		       lineage_integration, lineage_connection_id, lineage_connection_name, lineage_external_account_id,
 		       chain_depth, timestamp, payload, schema_full_name, schema_version
 		FROM events
@@ -71,7 +73,7 @@ func (d *DB) GetEvent(ctx context.Context, eventID uuid.UUID) (eventpkg.Event, e
 
 func (d *DB) GetEventForTenant(ctx context.Context, tenantID tenant.ID, eventID uuid.UUID) (eventpkg.Event, error) {
 	const query = `
-		SELECT event_id, tenant_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
+		SELECT event_id, tenant_id, workflow_run_id, workflow_node_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
 		       lineage_integration, lineage_connection_id, lineage_connection_name, lineage_external_account_id,
 		       chain_depth, timestamp, payload, schema_full_name, schema_version
 		FROM events
@@ -90,7 +92,7 @@ func (d *DB) GetEventForTenant(ctx context.Context, tenantID tenant.ID, eventID 
 
 func (d *DB) ListEvents(ctx context.Context, tenantID tenant.ID, eventType, source string, from, to *time.Time, limit int) ([]eventpkg.Event, error) {
 	query := `
-		SELECT event_id, tenant_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
+		SELECT event_id, tenant_id, workflow_run_id, workflow_node_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
 		       lineage_integration, lineage_connection_id, lineage_connection_name, lineage_external_account_id,
 		       chain_depth, timestamp, payload, schema_full_name, schema_version
 		FROM events
@@ -143,6 +145,8 @@ func (d *DB) ListEvents(ctx context.Context, tenantID tenant.ID, eventType, sour
 
 func scanEvent(row scanner, evt *eventpkg.Event) error {
 	var payload []byte
+	var workflowRunID sql.NullString
+	var workflowNodeID sql.NullString
 	var sourceConnectionID sql.NullString
 	var sourceConnectionName sql.NullString
 	var sourceExternalAccountID sql.NullString
@@ -156,6 +160,8 @@ func scanEvent(row scanner, evt *eventpkg.Event) error {
 	if err := row.Scan(
 		&evt.EventID,
 		&evt.TenantID,
+		&workflowRunID,
+		&workflowNodeID,
 		&evt.Type,
 		&evt.Source.Integration,
 		&evt.SourceKind,
@@ -176,6 +182,8 @@ func scanEvent(row scanner, evt *eventpkg.Event) error {
 	}
 
 	evt.Source.Kind = evt.SourceKind
+	evt.WorkflowRunID = parseOptionalUUID(workflowRunID)
+	evt.WorkflowNodeID = nullableStringValue(workflowNodeID)
 	evt.Source.ConnectionID = parseOptionalUUID(sourceConnectionID)
 	evt.Source.ConnectionName = nullableStringValue(sourceConnectionName)
 	evt.Source.ExternalAccountID = nullableStringValue(sourceExternalAccountID)

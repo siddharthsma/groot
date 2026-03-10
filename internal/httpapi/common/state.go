@@ -31,6 +31,9 @@ import (
 	"groot/internal/subscription"
 	"groot/internal/subscriptionfilter"
 	"groot/internal/tenant"
+	"groot/internal/workflow"
+	builderapi "groot/internal/workflow/builderapi"
+	workflowpublish "groot/internal/workflow/publish"
 )
 
 type Checker interface {
@@ -87,6 +90,7 @@ type AgentService interface {
 	Update(context.Context, tenant.ID, uuid.UUID, agent.CreateRequest) (agent.Definition, error)
 	Get(context.Context, tenant.ID, uuid.UUID) (agent.Definition, error)
 	List(context.Context, tenant.ID) ([]agent.Definition, error)
+	ListVersions(context.Context, tenant.ID, uuid.UUID) ([]agent.Version, error)
 	Delete(context.Context, tenant.ID, uuid.UUID) error
 	ListSessions(context.Context, tenant.ID, *uuid.UUID, string, int) ([]agent.Session, error)
 	GetSession(context.Context, tenant.ID, uuid.UUID) (agent.Session, error)
@@ -95,6 +99,45 @@ type AgentService interface {
 
 type AgentToolService interface {
 	ExecuteTool(context.Context, agent.ToolExecutionRequest) (agent.ToolExecutionResult, error)
+}
+
+type WorkflowService interface {
+	Create(context.Context, tenant.ID, string, string) (workflow.Workflow, error)
+	List(context.Context, tenant.ID) ([]workflow.Workflow, error)
+	Get(context.Context, tenant.ID, uuid.UUID) (workflow.Workflow, error)
+	Update(context.Context, tenant.ID, uuid.UUID, string, string) (workflow.Workflow, error)
+	CreateVersion(context.Context, tenant.ID, uuid.UUID, json.RawMessage) (workflow.Version, error)
+	ListVersions(context.Context, tenant.ID, uuid.UUID) ([]workflow.Version, error)
+	GetVersion(context.Context, tenant.ID, uuid.UUID) (workflow.Version, error)
+	UpdateVersion(context.Context, tenant.ID, uuid.UUID, json.RawMessage) (workflow.Version, error)
+	ValidateVersion(context.Context, tenant.ID, uuid.UUID) (workflow.ValidateResult, error)
+	CompileVersion(context.Context, tenant.ID, uuid.UUID) (workflow.Version, error)
+}
+
+type WorkflowPublishService interface {
+	Publish(context.Context, tenant.ID, uuid.UUID) (workflowpublish.PublishResult, error)
+	Unpublish(context.Context, tenant.ID, uuid.UUID) (workflowpublish.UnpublishResult, error)
+	ArtifactsByWorkflow(context.Context, tenant.ID, uuid.UUID) (workflow.Artifacts, error)
+	ArtifactsByVersion(context.Context, tenant.ID, uuid.UUID) (workflow.Artifacts, error)
+}
+
+type WorkflowRuntimeService interface {
+	ListRuns(context.Context, tenant.ID, uuid.UUID, int) ([]workflow.Run, error)
+	GetRun(context.Context, tenant.ID, uuid.UUID) (workflow.Run, error)
+	ListRunSteps(context.Context, tenant.ID, uuid.UUID) ([]workflow.RunStep, error)
+	ListRunWaits(context.Context, tenant.ID, uuid.UUID) ([]workflow.RunWait, error)
+	CancelRun(context.Context, tenant.ID, uuid.UUID) (workflow.Run, error)
+}
+
+type WorkflowBuilderService interface {
+	NodeTypes() builderapi.NodeTypesResponse
+	TriggerIntegrations() builderapi.TriggerIntegrationsResponse
+	ActionIntegrations() builderapi.ActionIntegrationsResponse
+	ListConnections(context.Context, tenant.ID, string, string, string) (builderapi.ConnectionsResponse, error)
+	ListAgents(context.Context, tenant.ID) (builderapi.AgentsResponse, error)
+	ListAgentVersions(context.Context, tenant.ID, uuid.UUID) (builderapi.AgentVersionsResponse, error)
+	WaitStrategies() builderapi.WaitStrategiesResponse
+	ArtifactMap(context.Context, tenant.ID, uuid.UUID) (builderapi.ArtifactMapResponse, error)
 }
 
 type ConnectionService interface {
@@ -204,6 +247,10 @@ type Options struct {
 	Audit                    AuditService
 	Agents                   AgentService
 	AgentTools               AgentToolService
+	Workflows                WorkflowService
+	WorkflowPublish          WorkflowPublishService
+	WorkflowRuntime          WorkflowRuntimeService
+	WorkflowBuilder          WorkflowBuilderService
 	SystemAPIKey             string
 	AgentRuntimeSharedSecret string
 	Edition                  edition.Runtime
@@ -242,6 +289,10 @@ type State struct {
 	AuditSvc                 AuditService
 	AgentSvc                 AgentService
 	AgentToolSvc             AgentToolService
+	WorkflowSvc              WorkflowService
+	WorkflowPublishSvc       WorkflowPublishService
+	WorkflowRuntimeSvc       WorkflowRuntimeService
+	WorkflowBuilderSvc       WorkflowBuilderService
 	SystemAPIKey             string
 	AgentRuntimeSharedSecret string
 	EditionRuntime           edition.Runtime
@@ -283,6 +334,10 @@ func NewState(opts Options) *State {
 		AuditSvc:                 opts.Audit,
 		AgentSvc:                 opts.Agents,
 		AgentToolSvc:             opts.AgentTools,
+		WorkflowSvc:              opts.Workflows,
+		WorkflowPublishSvc:       opts.WorkflowPublish,
+		WorkflowRuntimeSvc:       opts.WorkflowRuntime,
+		WorkflowBuilderSvc:       opts.WorkflowBuilder,
 		SystemAPIKey:             opts.SystemAPIKey,
 		AgentRuntimeSharedSecret: opts.AgentRuntimeSharedSecret,
 		EditionRuntime:           opts.Edition,

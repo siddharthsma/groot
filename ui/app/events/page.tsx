@@ -1,13 +1,17 @@
-import { EventsPanel } from "@/components/events/EventsPanel";
 import { AppShell } from "@/components/layout/AppShell";
+import { PlaceholderPanel } from "@/components/layout/PlaceholderPanel";
 
 export default function EventsPage() {
   return (
     <AppShell
-      title="Events"
-      description="Event browsing, execution graphs, and replay tooling will build on this route."
+      title="Event Stream"
+      description="Watch signals move through your system."
     >
-      <EventsPanel />
+      <PlaceholderPanel
+        title="The stream is quiet for now."
+        description="This route will later surface events, replay controls, and graph-level inspection. Today it simply frames where system signals will be observed."
+        eyebrow="Monitor"
+      />
     </AppShell>
   );
 }

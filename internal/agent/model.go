@@ -23,6 +23,9 @@ type Run struct {
 	SubscriptionID uuid.UUID
 	AgentID        *uuid.UUID
 	AgentSessionID *uuid.UUID
+	WorkflowRunID  *uuid.UUID
+	WorkflowNodeID *string
+	AgentVersionID *uuid.UUID
 	Status         string
 	Steps          int
 	StartedAt      time.Time
@@ -37,6 +40,9 @@ type RunRecord struct {
 	SubscriptionID uuid.UUID
 	AgentID        *uuid.UUID
 	AgentSessionID *uuid.UUID
+	WorkflowRunID  *uuid.UUID
+	WorkflowNodeID *string
+	AgentVersionID *uuid.UUID
 	Status         string
 	Steps          int
 	StartedAt      time.Time
@@ -69,6 +75,38 @@ type Definition struct {
 	SessionAutoCreate bool                   `json:"session_auto_create"`
 	CreatedAt         time.Time              `json:"created_at"`
 	UpdatedAt         time.Time              `json:"updated_at"`
+}
+
+type Version struct {
+	ID                uuid.UUID              `json:"id"`
+	AgentID           uuid.UUID              `json:"agent_id"`
+	TenantID          uuid.UUID              `json:"-"`
+	VersionNumber     int                    `json:"version_number"`
+	Name              string                 `json:"name"`
+	Instructions      string                 `json:"instructions"`
+	Integration       *string                `json:"integration,omitempty"`
+	Model             *string                `json:"model,omitempty"`
+	AllowedTools      []string               `json:"allowed_tools"`
+	ToolBindings      map[string]ToolBinding `json:"tool_bindings"`
+	MemoryEnabled     bool                   `json:"memory_enabled"`
+	SessionAutoCreate bool                   `json:"session_auto_create"`
+	CreatedAt         time.Time              `json:"created_at"`
+}
+
+type VersionRecord struct {
+	ID                uuid.UUID
+	AgentID           uuid.UUID
+	TenantID          uuid.UUID
+	VersionNumber     int
+	Name              string
+	Instructions      string
+	Integration       *string
+	Model             *string
+	AllowedTools      []string
+	ToolBindings      map[string]ToolBinding
+	MemoryEnabled     bool
+	SessionAutoCreate bool
+	CreatedAt         time.Time
 }
 
 type DefinitionRecord struct {

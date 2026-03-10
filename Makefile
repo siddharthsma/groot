@@ -10,6 +10,7 @@ GO_RUN_ENV = \
 	MAX_CHAIN_DEPTH=$${MAX_CHAIN_DEPTH:-10} \
 	MAX_REPLAY_EVENTS=$${MAX_REPLAY_EVENTS:-1000} \
 	MAX_REPLAY_WINDOW_HOURS=$${MAX_REPLAY_WINDOW_HOURS:-24} \
+	WORKFLOW_WAIT_TIMEOUT_SWEEP_INTERVAL=$${WORKFLOW_WAIT_TIMEOUT_SWEEP_INTERVAL:-5s} \
 	SCHEMA_VALIDATION_MODE=$${SCHEMA_VALIDATION_MODE:-warn} \
 	SCHEMA_REGISTRATION_MODE=$${SCHEMA_REGISTRATION_MODE:-startup} \
 	SCHEMA_MAX_PAYLOAD_BYTES=$${SCHEMA_MAX_PAYLOAD_BYTES:-262144} \
@@ -47,7 +48,7 @@ GO_RUN_ENV = \
 
 INTEGRATION_TEST_FLAGS = -tags=integration -count=1 -p 1 ./tests/integration
 
-.PHONY: up down logs build run test lint fmt health migrate checkpoint checkpoint-fast checkpoint-integration checkpoint-reset checkpoint-audit checkpoint-system
+.PHONY: up down logs build run test lint fmt health migrate checkpoint checkpoint-fast checkpoint-integration checkpoint-reset checkpoint-audit checkpoint-audit-recent checkpoint-system
 
 up:
 	docker compose up -d --build
@@ -98,6 +99,12 @@ checkpoint-audit:
 	docker compose stop groot-api >/dev/null 2>&1 || true; \
 	trap 'docker compose start groot-api >/dev/null 2>&1 || true' EXIT; \
 	go test $(INTEGRATION_TEST_FLAGS) -run '^TestPhase20Audit$$'
+
+checkpoint-audit-recent:
+	@set -e; \
+	docker compose stop groot-api >/dev/null 2>&1 || true; \
+	trap 'docker compose start groot-api >/dev/null 2>&1 || true' EXIT; \
+	go test $(INTEGRATION_TEST_FLAGS) -run '^TestPhase33To36Audit$$'
 
 checkpoint: checkpoint-fast checkpoint-integration checkpoint-audit
 

@@ -1,23 +1,23 @@
 import type { Metadata } from "next";
-import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
+import { JetBrains_Mono, Space_Grotesk } from "next/font/google";
 import { QueryProvider } from "@/lib/query/provider";
 import "./globals.css";
 
-const sans = IBM_Plex_Sans({
-  variable: "--font-sans",
+const sans = Space_Grotesk({
+  variable: "--font-ui",
   subsets: ["latin"],
   weight: ["400", "500", "600", "700"],
 });
 
-const mono = IBM_Plex_Mono({
-  variable: "--font-geist-mono",
+const mono = JetBrains_Mono({
+  variable: "--font-code",
   subsets: ["latin"],
   weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
-  title: "Groot UI",
-  description: "Frontend workspace scaffold for Groot",
+  title: "Groot",
+  description: "Cosmic dark tenant shell for the Groot UI",
 };
 
 export default function RootLayout({
@@ -26,8 +26,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${sans.variable} ${mono.variable} antialiased`}>
+    <html lang="en" className="dark">
+      <body
+        className={`${sans.className} ${sans.variable} ${mono.variable} antialiased`}
+      >
         <QueryProvider>{children}</QueryProvider>
       </body>
     </html>

@@ -18,6 +18,7 @@ func TestLoad(t *testing.T) {
 	t.Setenv("DELIVERY_MAX_ATTEMPTS", "3")
 	t.Setenv("DELIVERY_INITIAL_INTERVAL", "1s")
 	t.Setenv("DELIVERY_MAX_INTERVAL", "10s")
+	t.Setenv("WORKFLOW_WAIT_TIMEOUT_SWEEP_INTERVAL", "7s")
 	t.Setenv("MAX_REPLAY_EVENTS", "25")
 	t.Setenv("MAX_REPLAY_WINDOW_HOURS", "12")
 	t.Setenv("STRIPE_WEBHOOK_TOLERANCE_SECONDS", "123")
@@ -81,6 +82,9 @@ func TestLoad(t *testing.T) {
 	}
 	if got, want := cfg.DeliveryRetry.MaxAttempts, 3; got != want {
 		t.Fatalf("DeliveryRetry.MaxAttempts = %d, want %d", got, want)
+	}
+	if got, want := int(cfg.WorkflowWaitSweepInterval.Seconds()), 7; got != want {
+		t.Fatalf("WorkflowWaitSweepInterval = %d, want %d", got, want)
 	}
 	if got, want := cfg.Resend.APIBaseURL, "http://127.0.0.1:18090"; got != want {
 		t.Fatalf("Resend.APIBaseURL = %q, want %q", got, want)

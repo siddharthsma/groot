@@ -17,7 +17,7 @@ func (a *Application) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
 	go func() {
 		a.logger.Info("http server listening", slog.String("addr", a.httpAddr))
 		if err := a.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -31,6 +31,14 @@ func (a *Application) Run(ctx context.Context) error {
 	}()
 	go func() {
 		if err := a.runDeliveryPoller(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+			errCh <- err
+		}
+	}()
+	go func() {
+		if a.runWorkflowWaits == nil {
+			return
+		}
+		if err := a.runWorkflowWaits(runCtx); err != nil && !errors.Is(err, context.Canceled) {
 			errCh <- err
 		}
 	}()

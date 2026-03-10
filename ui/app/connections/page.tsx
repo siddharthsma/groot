@@ -1,13 +1,17 @@
-import { ConnectionsPanel } from "@/components/connections/ConnectionsPanel";
 import { AppShell } from "@/components/layout/AppShell";
+import { PlaceholderPanel } from "@/components/layout/PlaceholderPanel";
 
 export default function ConnectionsPage() {
   return (
     <AppShell
       title="Connections"
-      description="Connection management screens will land here in later phases."
+      description="Link integrations to your system."
     >
-      <ConnectionsPanel />
+      <PlaceholderPanel
+        title="Connections will anchor live signals."
+        description="This route will later hold connection lists, setup flows, and configuration detail. For now it marks the place where integrations attach to your system."
+        eyebrow="Source"
+      />
     </AppShell>
   );
 }

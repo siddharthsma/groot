@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
-import { Header } from "@/components/layout/Header";
+import { PageHeader } from "@/components/layout/PageHeader";
 import { Sidebar } from "@/components/layout/Sidebar";
+import { ShellContainer } from "@/components/layout/ShellContainer";
+import { TopBar } from "@/components/layout/TopBar";
 
 type AppShellProps = {
   title: string;
@@ -10,12 +12,19 @@ type AppShellProps = {
 
 export function AppShell({ title, description, children }: AppShellProps) {
   return (
-    <div className="min-h-screen bg-transparent text-slate-950">
-      <div className="mx-auto grid min-h-screen max-w-[1600px] grid-cols-1 lg:grid-cols-[260px_minmax(0,1fr)]">
-        <Sidebar />
-        <div className="flex min-w-0 flex-col">
-          <Header title={title} description={description} />
-          <main className="flex-1 px-5 pb-8 pt-6 sm:px-8">{children}</main>
+    <div className="min-h-screen bg-transparent text-foreground">
+      <div className="mx-auto grid min-h-screen max-w-[1680px] grid-cols-1 lg:grid-cols-[296px_minmax(0,1fr)]">
+        <div className="hidden lg:block">
+          <Sidebar />
+        </div>
+        <div className="relative flex min-w-0 flex-col">
+          <TopBar title={title} />
+          <main className="flex-1 pb-10 pt-8">
+            <ShellContainer className="space-y-8">
+              <PageHeader title={title} description={description} />
+              {children}
+            </ShellContainer>
+          </main>
         </div>
       </div>
     </div>

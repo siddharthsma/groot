@@ -57,9 +57,9 @@ func TestEmitResultEventPublishesAndLinks(t *testing.T) {
 		SubscriptionID: subscriptionID,
 		DeliveryJobID:  jobID,
 		InputEvent: Event{
-			EventID:    inputEventID,
-			TenantID:   tenantID,
-			Type:       "resend.email.received.v1",
+			EventID:  inputEventID,
+			TenantID: tenantID,
+			Type:     "resend.email.received.v1",
 			Source: Source{
 				Kind:         SourceKindExternal,
 				Integration:  "resend",

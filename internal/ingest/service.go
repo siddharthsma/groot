@@ -24,14 +24,16 @@ var (
 )
 
 type Request struct {
-	TenantID   tenant.ID
-	Type       string
-	Source     string
-	SourceInfo eventpkg.Source
-	SourceKind string
-	Lineage    *eventpkg.Lineage
-	ChainDepth int
-	Payload    json.RawMessage
+	TenantID       tenant.ID
+	WorkflowRunID  *uuid.UUID
+	WorkflowNodeID string
+	Type           string
+	Source         string
+	SourceInfo     eventpkg.Source
+	SourceKind     string
+	Lineage        *eventpkg.Lineage
+	ChainDepth     int
+	Payload        json.RawMessage
 }
 
 type Publisher interface {
@@ -113,15 +115,17 @@ func (s *Service) Ingest(ctx context.Context, req Request) (eventpkg.Event, erro
 	}
 
 	evt := eventpkg.Event{
-		EventID:    uuid.New(),
-		TenantID:   req.TenantID,
-		Type:       eventType,
-		Source:     source,
-		SourceKind: source.Kind,
-		Lineage:    eventpkg.NormalizeLineage(req.Lineage),
-		ChainDepth: req.ChainDepth,
-		Timestamp:  s.now(),
-		Payload:    payload,
+		EventID:        uuid.New(),
+		TenantID:       req.TenantID,
+		WorkflowRunID:  req.WorkflowRunID,
+		WorkflowNodeID: strings.TrimSpace(req.WorkflowNodeID),
+		Type:           eventType,
+		Source:         source,
+		SourceKind:     source.Kind,
+		Lineage:        eventpkg.NormalizeLineage(req.Lineage),
+		ChainDepth:     req.ChainDepth,
+		Timestamp:      s.now(),
+		Payload:        payload,
 	}
 	if evt.ChainDepth < 0 {
 		return eventpkg.Event{}, ErrInvalidChainDepth

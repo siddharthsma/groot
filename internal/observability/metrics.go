@@ -54,6 +54,18 @@ type Metrics struct {
 	graphNodesTotal                        atomic.Uint64
 	graphEdgesTotal                        atomic.Uint64
 	graphLimitExceeded                     atomic.Uint64
+	workflowPublishes                      atomic.Uint64
+	workflowPublishFailures                atomic.Uint64
+	workflowArtifactsCreated               atomic.Uint64
+	workflowArtifactsUpdated               atomic.Uint64
+	workflowArtifactsSuperseded            atomic.Uint64
+	workflowRunsStarted                    atomic.Uint64
+	workflowRunsCompleted                  atomic.Uint64
+	workflowRunsFailed                     atomic.Uint64
+	workflowRunsWaiting                    atomic.Uint64
+	workflowWaitsRegistered                atomic.Uint64
+	workflowWaitsMatched                   atomic.Uint64
+	workflowWaitsTimedOut                  atomic.Uint64
 	editionInfo                            atomic.Value
 	licenseInfo                            atomic.Value
 
@@ -195,6 +207,34 @@ func (m *Metrics) AddGraphEdges(n int) {
 	}
 }
 func (m *Metrics) IncGraphLimitExceeded() { m.graphLimitExceeded.Add(1) }
+func (m *Metrics) IncWorkflowPublish()    { m.workflowPublishes.Add(1) }
+func (m *Metrics) IncWorkflowPublishFailures() {
+	m.workflowPublishFailures.Add(1)
+}
+func (m *Metrics) AddWorkflowArtifactsCreated(n int) {
+	if n > 0 {
+		m.workflowArtifactsCreated.Add(uint64(n))
+	}
+}
+func (m *Metrics) AddWorkflowArtifactsUpdated(n int) {
+	if n > 0 {
+		m.workflowArtifactsUpdated.Add(uint64(n))
+	}
+}
+func (m *Metrics) AddWorkflowArtifactsSuperseded(n int) {
+	if n > 0 {
+		m.workflowArtifactsSuperseded.Add(uint64(n))
+	}
+}
+func (m *Metrics) IncWorkflowRunsStarted()   { m.workflowRunsStarted.Add(1) }
+func (m *Metrics) IncWorkflowRunsCompleted() { m.workflowRunsCompleted.Add(1) }
+func (m *Metrics) IncWorkflowRunsFailed()    { m.workflowRunsFailed.Add(1) }
+func (m *Metrics) IncWorkflowRunsWaiting()   { m.workflowRunsWaiting.Add(1) }
+func (m *Metrics) IncWorkflowWaitsRegistered() {
+	m.workflowWaitsRegistered.Add(1)
+}
+func (m *Metrics) IncWorkflowWaitsMatched()  { m.workflowWaitsMatched.Add(1) }
+func (m *Metrics) IncWorkflowWaitsTimedOut() { m.workflowWaitsTimedOut.Add(1) }
 func (m *Metrics) SetEditionInfo(edition, tenancyMode string) {
 	m.editionInfo.Store(EditionInfo{Edition: edition, TenancyMode: tenancyMode})
 }
@@ -270,6 +310,18 @@ func (m *Metrics) Prometheus() string {
 		fmt.Sprintf("groot_graph_nodes_total %d", m.graphNodesTotal.Load()),
 		fmt.Sprintf("groot_graph_edges_total %d", m.graphEdgesTotal.Load()),
 		fmt.Sprintf("groot_graph_limit_exceeded_total %d", m.graphLimitExceeded.Load()),
+		fmt.Sprintf("groot_workflow_publish_total %d", m.workflowPublishes.Load()),
+		fmt.Sprintf("groot_workflow_publish_failures_total %d", m.workflowPublishFailures.Load()),
+		fmt.Sprintf("groot_workflow_artifacts_created_total %d", m.workflowArtifactsCreated.Load()),
+		fmt.Sprintf("groot_workflow_artifacts_updated_total %d", m.workflowArtifactsUpdated.Load()),
+		fmt.Sprintf("groot_workflow_artifacts_superseded_total %d", m.workflowArtifactsSuperseded.Load()),
+		fmt.Sprintf("groot_workflow_runs_started_total %d", m.workflowRunsStarted.Load()),
+		fmt.Sprintf("groot_workflow_runs_completed_total %d", m.workflowRunsCompleted.Load()),
+		fmt.Sprintf("groot_workflow_runs_failed_total %d", m.workflowRunsFailed.Load()),
+		fmt.Sprintf("groot_workflow_runs_waiting_total %d", m.workflowRunsWaiting.Load()),
+		fmt.Sprintf("groot_workflow_waits_registered_total %d", m.workflowWaitsRegistered.Load()),
+		fmt.Sprintf("groot_workflow_waits_matched_total %d", m.workflowWaitsMatched.Load()),
+		fmt.Sprintf("groot_workflow_waits_timed_out_total %d", m.workflowWaitsTimedOut.Load()),
 	}
 	lines = append(lines, m.labelledPrometheus("groot_connector_deliveries_total", m.snapshot(m.connectorDeliveries))...)
 	lines = append(lines, m.labelledPrometheus("groot_connector_delivery_failures_total", m.snapshot(m.connectorDeliveryFailures))...)

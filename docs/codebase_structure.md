@@ -75,6 +75,8 @@ This is organized separately on purpose:
 - frontend dependency management stays in `ui/`
 - future UI phases can add pages and client-side state without reshaping the backend module
 
+Phase 38 is the current frontend baseline: the UI now has a real tenant shell and theme system, while the route content remains intentionally placeholder-only.
+
 ### `ui/` Workspace Layout
 
 | File Or Directory | What It Contains | Why It Is Here |
@@ -88,15 +90,17 @@ This is organized separately on purpose:
 | `ui/postcss.config.mjs` | PostCSS configuration for Tailwind. | Tailwind processing is a frontend-only concern. |
 | `ui/eslint.config.mjs` | Frontend lint configuration. | Frontend linting should stay local to the frontend workspace. |
 | `ui/tsconfig.json` | TypeScript config for the frontend app. | Frontend compilation must stay independent from backend Go tooling. |
-| `ui/app/` | Next.js App Router entrypoints, layout, global CSS, and placeholder routes. | Route-level UI structure belongs in the framework app directory. |
+| `ui/app/` | Next.js App Router entrypoints, layout, global CSS, and the top-level in-app routes for Overview, Integrations, Connections, Workflows, Agents, Event Stream, and Runs. | Route-level UI structure belongs in the framework app directory. |
 | `ui/components/ui/` | shadcn/ui generated primitives. | Generated primitives are separated from Groot-specific UI pieces. |
-| `ui/components/layout/` | Shared shell pieces like the sidebar, header, and wrapper. | Layout concerns are reused across routes and should not live inside individual pages. |
+| `ui/components/layout/` | Shared shell pieces such as the sidebar, grouped navigation, top bar, page header, tenant badge, placeholder panel, and shell container. | Layout concerns are reused across routes and should not live inside individual pages. |
 | `ui/components/forms/` | Reusable form scaffolding helpers. | Shared form structure should not be duplicated across routes. |
 | `ui/components/graphs/` | React Flow canvas foundation and Dagre layout helper. | Graph-specific rendering logic is a distinct UI concern. |
 | `ui/components/tables/` | Shared table scaffolding. | Future data-heavy screens need a stable home for reusable table wrappers. |
 | `ui/components/integrations/` | Placeholder integration-facing components. | Keeps integration UI separate from generic layout and data primitives. |
+| `ui/components/connections/` | Placeholder connection-facing components. | Keeps connection UI distinct from integration catalog and generic shell elements. |
 | `ui/components/agents/` | Placeholder agent-facing components. | Reserves a canonical home for agent UI. |
 | `ui/components/events/` | Placeholder event-facing components. | Reserves a canonical home for event browser and replay UI. |
+| `ui/components/runs/` | Placeholder run-monitor-facing components. | Reserves a canonical home for workflow run and execution monitoring UI. |
 | `ui/lib/api/` | API client foundation and request types. | Network access should be centralized instead of embedded in React components. |
 | `ui/lib/query/` | React Query client creation and integration wiring. | Server-state setup belongs in one narrow shared layer. |
 | `ui/lib/schemas/` | Frontend validation schemas and zod helpers. | Browser-side validation needs a dedicated home. |
@@ -575,6 +579,8 @@ This package owns HTTP only, but it is now split by API surface so tenant APIs, 
 | `internal/httpapi/tenant/handlers.go` | Tenant-facing handlers for tenants, events, API keys, subscriptions, connections, inbound routes, deliveries, functions, and agents. |
 | `internal/httpapi/tenant/middleware.go` | Tenant auth middleware and tenant principal extraction helpers. |
 | `internal/httpapi/tenant/routes.go` | Tenant route registration. |
+| `internal/httpapi/tenant/workflow_builder.go` | Tenant-authenticated workflow-builder metadata handlers for node types, trigger/action integration catalogs, connection pickers, agent/version pickers, wait strategies, and workflow artifact maps. |
+| `internal/httpapi/tenant/workflows.go` | Tenant workflow design/runtime handlers, including wrapped validate/compile/publish responses and workflow run inspection endpoints. |
 
 #### `internal/httpapi/admin/`
 
@@ -681,6 +687,9 @@ All PostgreSQL access goes through this package so SQL does not leak into handle
 | `internal/storage/subscriptions.go` | Subscription create/update/read/list helpers, matching queries, status changes, and filter persistence. |
 | `internal/storage/system_settings.go` | System settings reads/writes used by edition/license/bootstrap flows. |
 | `internal/storage/tenants.go` | Tenant create/list/get/update helpers and tenant-count persistence used by edition enforcement. |
+| `internal/storage/workflow_publish.go` | Transactional workflow publish/unpublish SQL: advisory locking, superseding old workflow artifacts, inserting new `workflow_entry_bindings`, and listing grouped artifact records for inspection APIs. |
+| `internal/storage/workflow_runtime.go` | Workflow run, step, and wait persistence plus runtime lookups for active entry bindings, workflow-owned subscription artifacts, wait matching, wait timeout sweeping, and workflow-run inspection APIs. |
+| `internal/storage/workflows.go` | Workflow and workflow-version persistence, including compile hashes, validity state, and design-time CRUD. |
 
 ### `internal/stream/`
 
@@ -738,6 +747,28 @@ This package still owns tenant lifecycle and legacy tenant API keys because thos
 | `internal/tenant/service.go` | Tenant CRUD, name uniqueness, legacy API key creation/hashing, and legacy auth lookup. |
 | `internal/tenant/service_test.go` | Tenant service tests. |
 
+### `internal/workflow/`
+
+This package family now spans workflow design-time, publish-time artifact creation, and live execution tracking. It stores workflow definitions, validates graph references, compiles deterministic artifact plans, publishes those plans into workflow-owned entry bindings and subscriptions, and tracks workflow runs, steps, waits, and timeout sweeping.
+
+| File | What It Contains |
+| --- | --- |
+| `internal/workflow/model.go` | Canonical workflow package aliases and helper wrappers used by handlers, storage, and services. |
+| `internal/workflow/service.go` | Workflow CRUD, versioning, validation, and compilation orchestration. |
+| `internal/workflow/builderapi/service.go` | Frontend-oriented workflow-builder service that shapes node catalogs, integration/action metadata, connection and agent selectors, wait strategies, artifact maps, and wrapped compile/publish summaries for UI consumers. |
+| `internal/workflow/builderapi/types.go` | Builder-facing response models for validation errors, compile/publish summaries, builder metadata endpoints, artifact maps, and step records. |
+| `internal/workflow/spec/spec.go` | Pure workflow definition/model types shared by compiler and validator without creating import cycles back into the root service package. |
+| `internal/workflow/compiler/compiler.go` | Deterministic compiler that turns a workflow graph into a concrete artifact plan for `compiled_json`. |
+| `internal/workflow/compiler/types.go` | Compiled workflow artifact, binding, and entrypoint types. |
+| `internal/workflow/compiler/validator.go` | Compileability checks for unsupported node types and missing triggers. |
+| `internal/workflow/compiler/compiler_test.go` | Compiler determinism and artifact-shape tests. |
+| `internal/workflow/publish/service.go` | Workflow publish/unpublish orchestration: checks version validity, builds desired entry bindings and workflow-owned subscriptions from `compiled_json`, flattens Condition branches into filtered subscriptions, and exposes grouped artifact inspection helpers. |
+| `internal/workflow/runtime/service.go` | Live workflow runtime service: start runs from entry bindings, create step records, register waits, resume waits on matching events, emit internal workflow node events, and expose run/step/wait inspection helpers. |
+| `internal/workflow/runtime/service_test.go` | Runtime helper tests for correlation-key derivation and wait timeout parsing. |
+| `internal/workflow/runtime/worker.go` | In-process background worker that sweeps expired workflow waits on a configurable interval. |
+| `internal/workflow/validation/validator.go` | Graph validator for node config, schema references, connections, agent versions, edge rules, and cycles. |
+| `internal/workflow/validation/validator_test.go` | Validator tests for valid graphs and common reference/config failures. |
+
 ## `migrations/`
 
 Migrations are kept as simple numbered SQL files so schema history is explicit and deployable without hidden startup DDL.
@@ -762,6 +793,10 @@ Migrations are kept as simple numbered SQL files so schema history is explicit a
 | `migrations/018_phase20_checkpoint_fixes.sql` | Operational fixes discovered during the Phase 20 checkpoint. |
 | `migrations/021_agent_sessions.sql` | Agents, agent sessions, session-event links, and subscription/run agent references. |
 | `migrations/022_phase33_connection_aware_events.sql` | Structured event source and lineage columns plus indexes for querying source and origin connections. |
+| `migrations/023_phase34_workflows.sql` | Workflow tables, workflow versioning, and internal `agent_versions` snapshots. |
+| `migrations/024_phase34_workflow_runtime_metadata.sql` | Storage-only workflow metadata columns on subscriptions, delivery jobs, agent runs, and events. |
+| `migrations/025_phase35_workflow_publish.sql` | Workflow publish-state columns, `subscriptions.agent_version_id`, and the `workflow_entry_bindings` table used to activate compiled workflows for new starts. |
+| `migrations/026_phase36_workflow_runs.sql` | Live workflow execution tracking tables (`workflow_runs`, `workflow_run_steps`, `workflow_run_waits`) plus workflow context columns and indexes for events, delivery jobs, and agent runs. |
 
 ## `tests/`
 
@@ -785,6 +820,9 @@ Integration tests live outside `internal/` because they exercise the system as a
 | `tests/integration/phase21_agent_sessions_test.go` | Agent session reuse and lifecycle integration coverage. |
 | `tests/integration/phase22_editions_test.go` | Edition/build/license/community integration coverage. |
 | `tests/integration/phase28_integration_catalog_test.go` | Live integration-catalog coverage for `/integrations`, integration detail, operations, schemas, and config responses. |
+| `tests/integration/phase34_workflows_test.go` | Workflow CRUD, workflow version validation, and workflow compilation coverage. |
+| `tests/integration/phase35_workflow_publish_test.go` | Workflow publish lifecycle coverage: publish, artifact inspection, workflow-managed subscription immutability, republish supersede behavior, unpublish, and the uncompiled-version rejection path. |
+| `tests/integration/phase36_workflow_runs_test.go` | Workflow run execution coverage: run start from entry bindings, wait registration, wait resume, workflow-run inspection APIs, internal workflow node events, and run cancellation. |
 | `tests/integration/phase33_connection_source_test.go` | Connection-aware event coverage for structured sources, source-based filters, lineage preservation, replay preservation, and same-integration default routing. |
 | `tests/integration/reset_test.go` | Deterministic reset and migration replay checks. |
 | `tests/integration/scenario_email_triage_test.go` | Golden inbound-email triage scenario. |
@@ -823,6 +861,7 @@ The docs directory mixes phase specs and reference material. The phase docs are 
 | `docs/phase21.md` | Phase 21 external agent runtime spec. |
 | `docs/phase22.md` | Phase 22 edition/community packaging spec. |
 | `docs/phase22_addendum.md` | Phase 22 addendum for build-time edition locking and signed licenses. |
+| `docs/phase34.md` | Phase 34 workflow design-time foundation spec. |
 | `docs/integrations/generated/*.md` | Committed integration reference pages generated from the live integration registry. |
 
 ## `build/`

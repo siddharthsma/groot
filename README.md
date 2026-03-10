@@ -46,7 +46,21 @@ curl localhost:8081/healthz
 
 ## Frontend Workspace
 
-Phase 31 adds a standalone Next.js workspace under [ui/](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/ui).
+The standalone Next.js workspace lives under [ui/](/Users/siddharthsameerambegaonkar/Desktop/Code/groot/ui).
+
+Phase 38 establishes the in-app shell there:
+
+- a dark-only cosmic design system
+- grouped tenant navigation
+- a shared sidebar and top bar
+- placeholder routes for:
+  - Overview
+  - Integrations
+  - Connections
+  - Workflows
+  - Agents
+  - Event Stream
+  - Runs
 
 Use it like this:
 
@@ -65,6 +79,8 @@ Useful frontend checks:
 - `pnpm test` prints the current placeholder message until frontend tests are added in a later phase
 
 The frontend expects the API at `NEXT_PUBLIC_GROOT_API_BASE_URL=http://localhost:8081` by default so it matches the current local Groot API port.
+
+The shell currently keeps `/` as the in-app Overview page. Future public landing and auth routes can be added later without replacing the theme/token foundation.
 
 ## Deployment Modes
 
@@ -130,6 +146,7 @@ The service reads all runtime configuration from environment variables.
 | `MAX_CHAIN_DEPTH` | Maximum allowed internal event chain depth before Groot stops emitting further result events | `10` |
 | `MAX_REPLAY_EVENTS` | Maximum events or replay job fanout allowed in one replay request | `1000` |
 | `MAX_REPLAY_WINDOW_HOURS` | Maximum replay query window size in hours | `24` |
+| `WORKFLOW_WAIT_TIMEOUT_SWEEP_INTERVAL` | Background sweep interval for expiring workflow waits | `5s` |
 | `SCHEMA_VALIDATION_MODE` | Event validation behavior for schema failures: `warn`, `reject`, or `off` | `warn` |
 | `SCHEMA_REGISTRATION_MODE` | Schema registration behavior: `startup` registers core plus integration-declared schemas on boot, `migrate` skips startup registration | `startup` |
 | `SCHEMA_MAX_PAYLOAD_BYTES` | Maximum payload size checked during schema validation | `262144` |
@@ -242,6 +259,7 @@ Local reproducible build helpers live in:
 - `make checkpoint-integration`: stop the compose `groot-api` service, run the full tagged Go integration suite against a test-owned API process, then restart the compose API
 - `make checkpoint-reset`: reset the local PostgreSQL schema from migrations and remove generated audit artifacts
 - `make checkpoint-audit`: run the tagged Phase 20 audit checks and overwrite `artifacts/phase20_audit_report.md`
+- `make checkpoint-audit-recent`: run the targeted Phase 33-36 audit sweep and overwrite `artifacts/phase33_36_audit_report.md`
 - `make checkpoint`: run `checkpoint-fast`, `checkpoint-integration`, and `checkpoint-audit`
 - `make checkpoint-system`: comprehensive post-refactor gate that runs `make up`, `make migrate`, `go build ./...`, `go test ./...`, `go vet ./...`, the full tagged integration suite, and the frontend `pnpm lint`, `pnpm typecheck`, `pnpm build`, and `pnpm test` checks
 - `go build ./cmd/groot`: build the Phase 30 integration lifecycle CLI
@@ -254,8 +272,18 @@ Local reproducible build helpers live in:
 - `migrations/016_subscription_filters.sql` adds `subscriptions.filter_json` and a GIN index for payload-based subscription filters
 - `migrations/017_auth_and_audit.sql` adds `api_keys`, `audit_events`, and actor metadata columns on core write tables
 - `migrations/022_phase33_connection_aware_events.sql` adds connection-aware event source and lineage columns to `events`, plus source/lineage indexes and support for multiple same-integration tenant connections
+- `migrations/023_phase34_workflows.sql` adds `workflows`, `workflow_versions`, and internal `agent_versions` for workflow validation and compilation references
+- `migrations/024_phase34_workflow_runtime_metadata.sql` adds storage-only workflow metadata columns to `subscriptions`, `delivery_jobs`, `agent_runs`, and `events`
+- `migrations/025_phase35_workflow_publish.sql` activates workflow publishing storage by adding `workflows.published_at`, `workflows.last_publish_error`, `workflow_versions.compiled_hash`, `workflow_versions.is_valid`, `workflow_versions.superseded_at`, `subscriptions.agent_version_id`, and the new `workflow_entry_bindings` table used for published workflow entry triggers
+- `migrations/026_phase36_workflow_runs.sql` adds `workflow_runs`, `workflow_run_steps`, `workflow_run_waits`, wait-matching indexes, and live workflow context columns on `events`, `delivery_jobs`, and `agent_runs`
+
+Phase 36 makes published workflows live: active entry bindings now start workflow runs automatically, action and agent executions carry `workflow_run_id` and `workflow_node_id`, wait nodes register resumable waits, and the in-process timeout worker sweeps expired waits on `WORKFLOW_WAIT_TIMEOUT_SWEEP_INTERVAL`.
+
+Phase 37 adds workflow-builder support APIs and frontend-oriented response shaping on top of the live workflow runtime. Builder clients now have dedicated metadata endpoints under `/workflow-builder/*`, `GET /workflow-versions/{version_id}/artifact-map`, wrapped validate/compile/publish responses, and UI-ready step records from `GET /workflow-runs/{run_id}/steps`.
 
 Phase 20+ integration tests live under `tests/integration` and use local Go mock servers for Slack, Notion, Resend, LLM, function destinations, and JWKS. They assume PostgreSQL, Kafka, and Temporal are already running via `make up`, and `make checkpoint-system` is the recommended full-system verification path after major refactors.
+
+For the newest backend workflow phases, `make checkpoint-audit-recent` is the focused audit gate. It reruns the Phase 32-36 regression checks, probes the live workflow/runtime API surface, and writes `artifacts/phase33_36_audit_report.md`.
 
 ## Integration Packages
 
@@ -311,14 +339,36 @@ Registry installs require `GROOT_INTEGRATION_REGISTRY_URL`. All installs require
 - `GET /connections`: list tenant-owned and global connections without secrets
 - `POST /agents`, `GET /agents`, `GET /agents/{agent_id}`, `PUT /agents/{agent_id}`, `DELETE /agents/{agent_id}`: manage tenant-scoped agent definitions used by `llm.agent`
 - `GET /agent-sessions`, `GET /agent-sessions/{session_id}`, `POST /agent-sessions/{session_id}/close`: inspect and close persistent agent sessions
+- `POST /workflows`, `GET /workflows`, `GET /workflows/{workflow_id}`, `PUT /workflows/{workflow_id}`: manage tenant-scoped workflow design records
+- `POST /workflows/{workflow_id}/versions`, `GET /workflows/{workflow_id}/versions`: create and inspect workflow versions; version creation requires a full `definition_json`
+- `GET /workflow-versions/{version_id}`, `PUT /workflow-versions/{version_id}`: fetch or fully replace a workflow version definition
+- `POST /workflow-versions/{version_id}/validate`: validate a workflow version, persist `validation_errors_json`, and return `200` with `{ "ok": false, "errors": [...] }` for workflow validation problems
+- `POST /workflow-versions/{version_id}/compile`: validate and compile a workflow version into deterministic `compiled_json` without creating runtime artifacts yet, returning a wrapped response with `ok`, `node_summary`, and `artifact_summary`
+- `POST /workflow-versions/{version_id}/publish`: publish a compiled, valid workflow version into live runtime artifacts and return a wrapped summary including `ok`, `published_at`, `artifacts_created`, `artifacts_superseded`, and `entry_bindings_activated`
+- `POST /workflows/{workflow_id}/unpublish`: deactivate the currently published workflow version for new starts and mark its artifacts inactive
+- `GET /workflows/{workflow_id}/artifacts`: inspect grouped workflow runtime artifacts across statuses for a workflow
+- `GET /workflow-versions/{version_id}/artifacts`: inspect grouped runtime artifacts for one workflow version
+- `GET /workflow-versions/{version_id}/artifact-map`: return a builder-oriented artifact map grouped by workflow node id
+- `GET /workflows/{workflow_id}/runs`: list workflow runs for one workflow
+- `GET /workflow-runs/{run_id}`: fetch one workflow run
+- `GET /workflow-runs/{run_id}/steps`: inspect ordered node-level step records for one run, including builder-oriented fields such as `wait_id`, `delivery_job_id`, `input_event_id`, and `output_event_id`
+- `GET /workflow-runs/{run_id}/waits`: inspect current and historical waits for one run
+- `POST /workflow-runs/{run_id}/cancel`: cancel a `running` or `waiting` workflow run and mark its active waits cancelled
+- `GET /workflow-builder/node-types`: tenant-authenticated workflow builder node catalog
+- `GET /workflow-builder/integrations/triggers`: tenant-authenticated trigger-capable integration catalog derived from registered schemas
+- `GET /workflow-builder/integrations/actions`: tenant-authenticated action integration catalog derived from registered integration operations
+- `GET /workflow-builder/connections`: tenant-authenticated builder connection picker with optional `integration`, `scope`, and `status` filters
+- `GET /workflow-builder/agents`: tenant-authenticated builder agent picker
+- `GET /workflow-builder/agents/{id}/versions`: tenant-authenticated list of all versions for one agent, newest first
+- `GET /workflow-builder/wait-strategies`: tenant-authenticated catalog of supported wait correlation strategies
 - `POST /routes/inbound`: create a tenant inbound route
 - `GET /routes/inbound`: list tenant inbound routes
 - `GET /system/routes/inbound`: system-authenticated list of all inbound routes
 - `POST /subscriptions`: create a webhook, function, or connection subscription for the authenticated tenant, with optional `emit_success_event`, `emit_failure_event`, and `filter`; `llm.agent` subscriptions also require `agent_id` and `session_key_template`; responses may include `warnings`
 - `GET /subscriptions`: list subscriptions for the authenticated tenant
-- `PUT /subscriptions/{subscription_id}`: full replacement update for a tenant subscription, including `filter`
-- `POST /subscriptions/{subscription_id}/pause`: pause a tenant subscription
-- `POST /subscriptions/{subscription_id}/resume`: resume a tenant subscription
+- `PUT /subscriptions/{subscription_id}`: full replacement update for a tenant subscription, including `filter`; workflow-managed subscriptions return `400 workflow-managed subscriptions cannot be modified directly`
+- `POST /subscriptions/{subscription_id}/pause`: pause a tenant subscription; workflow-managed subscriptions return `400 workflow-managed subscriptions cannot be modified directly`
+- `POST /subscriptions/{subscription_id}/resume`: resume a tenant subscription; workflow-managed subscriptions return `400 workflow-managed subscriptions cannot be modified directly`
 - `GET /deliveries`: list tenant delivery jobs with optional `status`, `subscription_id`, `event_id`, and `limit`, including `external_id`, `last_status_code`, and `result_event_id`
 - `GET /deliveries/{delivery_id}`: fetch one tenant delivery job, including `external_id`, `last_status_code`, and `result_event_id`
 - `POST /deliveries/{delivery_id}/retry`: reset a `dead_letter` or `failed` job to `pending`

@@ -14,6 +14,17 @@ func CoreBundles() []Bundle {
 				resultSpec("function", "invoke", 1, false, nil),
 			},
 		},
+		{
+			Name: "workflow",
+			Schemas: []Spec{
+				workflowNodeSpec("started"),
+				workflowNodeSpec("waiting"),
+				workflowNodeSpec("matched"),
+				workflowNodeSpec("completed"),
+				workflowNodeSpec("cancelled"),
+				workflowNodeSpec("timed_out"),
+			},
+		},
 	}
 }
 
@@ -79,4 +90,35 @@ func nullableIntegerSchema() map[string]any {
 }
 func enumStringSchema(value string) map[string]any {
 	return map[string]any{"type": "string", "enum": []string{value}}
+}
+
+func workflowNodeSpec(status string) Spec {
+	body, _ := json.Marshal(map[string]any{
+		"type":                 "object",
+		"additionalProperties": true,
+		"properties": map[string]any{
+			"workflow_id":         stringSchema(),
+			"workflow_version_id": stringSchema(),
+			"workflow_run_id":     stringSchema(),
+			"workflow_node_id":    stringSchema(),
+			"node_type":           stringSchema(),
+			"status":              stringSchema(),
+			"input_event_id":      nullableStringSchema(),
+		},
+		"required": []string{
+			"workflow_id",
+			"workflow_version_id",
+			"workflow_run_id",
+			"workflow_node_id",
+			"node_type",
+			"status",
+		},
+	})
+	return Spec{
+		EventType:  "workflow.node." + status,
+		Version:    1,
+		Source:     "workflow",
+		SourceKind: "internal",
+		SchemaJSON: body,
+	}
 }

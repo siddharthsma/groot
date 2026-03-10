@@ -672,7 +672,7 @@ func (h *Handlers) handleSubscriptionError(w http.ResponseWriter, tenantID tenan
 	switch {
 	case strings.HasPrefix(err.Error(), "invalid ") && (strings.Contains(err.Error(), "_id") || strings.Contains(err.Error(), "agent_id")):
 		common.WriteError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams):
+	case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams), errors.Is(err, subscription.ErrWorkflowManagedImmutable):
 		common.WriteError(w, http.StatusBadRequest, err.Error())
 	case common.IsFilterValidationError(err):
 		common.WriteSubscriptionFilterError(w, err)
@@ -694,7 +694,7 @@ func (h *Handlers) handleReplaceSubscriptionError(w http.ResponseWriter, tenantI
 	switch {
 	case strings.HasPrefix(err.Error(), "invalid ") && (strings.Contains(err.Error(), "_id") || strings.Contains(err.Error(), "agent_id")):
 		common.WriteError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams):
+	case errors.Is(err, subscription.ErrInvalidEventType), errors.Is(err, subscription.ErrInvalidDestinationType), errors.Is(err, subscription.ErrInvalidOperation), errors.Is(err, subscription.ErrInvalidOperationParams), errors.Is(err, subscription.ErrWorkflowManagedImmutable):
 		common.WriteError(w, http.StatusBadRequest, err.Error())
 	case common.IsFilterValidationError(err):
 		common.WriteSubscriptionFilterError(w, err)

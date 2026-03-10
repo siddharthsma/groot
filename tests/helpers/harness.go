@@ -482,17 +482,29 @@ func (h *Harness) FindEvent(tenantID, eventType string) (map[string]any, bool) {
 func (h *Harness) WaitForDeliveryStatus(tenantID string, eventID string, status string, timeout time.Duration) map[string]any {
 	h.T.Helper()
 	deadline := time.Now().Add(timeout)
+	var lastSeen map[string]any
 	for time.Now().Before(deadline) {
-		row := h.DB.QueryRow(`SELECT id, status, external_id, last_status_code, result_event_id FROM delivery_jobs WHERE tenant_id = $1 AND event_id = $2 ORDER BY created_at DESC LIMIT 1`, tenantID, eventID)
+		row := h.DB.QueryRow(`SELECT id, status, last_error, external_id, last_status_code, result_event_id FROM delivery_jobs WHERE tenant_id = $1 AND event_id = $2 ORDER BY created_at DESC LIMIT 1`, tenantID, eventID)
 		var id string
 		var gotStatus string
+		var lastError sql.NullString
 		var externalID sql.NullString
 		var lastStatus sql.NullInt64
 		var resultEventID sql.NullString
-		if err := row.Scan(&id, &gotStatus, &externalID, &lastStatus, &resultEventID); err == nil && gotStatus == status {
+		if err := row.Scan(&id, &gotStatus, &lastError, &externalID, &lastStatus, &resultEventID); err == nil && gotStatus == status {
 			return map[string]any{
 				"id":               id,
 				"status":           gotStatus,
+				"last_error":       nullString(lastError),
+				"external_id":      nullString(externalID),
+				"last_status_code": nullInt(lastStatus),
+				"result_event_id":  nullString(resultEventID),
+			}
+		} else if err == nil {
+			lastSeen = map[string]any{
+				"id":               id,
+				"status":           gotStatus,
+				"last_error":       nullString(lastError),
 				"external_id":      nullString(externalID),
 				"last_status_code": nullInt(lastStatus),
 				"result_event_id":  nullString(resultEventID),
@@ -500,7 +512,7 @@ func (h *Harness) WaitForDeliveryStatus(tenantID string, eventID string, status 
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
-	h.T.Fatalf("timed out waiting for delivery status %s", status)
+	h.T.Fatalf("timed out waiting for delivery status %s; last_seen=%v\nlogs:\n%s", status, lastSeen, h.Logs())
 	return nil
 }
 

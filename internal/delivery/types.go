@@ -25,6 +25,8 @@ type Job struct {
 	TenantID        uuid.UUID
 	SubscriptionID  uuid.UUID
 	EventID         uuid.UUID
+	WorkflowRunID   *uuid.UUID
+	WorkflowNodeID  string
 	IsReplay        bool
 	ReplayOfEventID *uuid.UUID
 	ResultEventID   *uuid.UUID
@@ -42,6 +44,8 @@ type JobRecord struct {
 	TenantID        uuid.UUID
 	SubscriptionID  uuid.UUID
 	EventID         uuid.UUID
+	WorkflowRunID   *uuid.UUID
+	WorkflowNodeID  string
 	IsReplay        bool
 	ReplayOfEventID *uuid.UUID
 	Status          string

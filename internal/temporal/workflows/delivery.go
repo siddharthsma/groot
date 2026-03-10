@@ -109,6 +109,7 @@ func DeliveryWorkflow(ctx workflow.Context, deliveryJobID string, maxAttempts in
 				SubscriptionID:  sub.ID,
 				Event:           event,
 				AgentID:         sub.AgentID,
+				AgentVersionID:  sub.AgentVersionID,
 				SessionKey:      sessionKey,
 				CreateIfMissing: sub.SessionCreateIfMissing,
 			}).Get(childCtx, &result)
@@ -212,6 +213,8 @@ func buildResultEventRequest(job activities.DeliveryJob, sub activities.Subscrip
 		SubscriptionID:        sub.ID,
 		InputEventID:          job.EventID,
 		ExistingResultEventID: job.ResultEventID,
+		WorkflowRunID:         job.WorkflowRunID,
+		WorkflowNodeID:        job.WorkflowNodeID,
 		InputEvent:            event,
 		IntegrationName:       connectorName,
 		Operation:             operation,
@@ -282,15 +285,17 @@ func connectorOutput(connectorName, operation string, result activities.Connecti
 
 func activityEventToStreamEvent(event activities.Event) eventpkg.Event {
 	return eventpkg.Event{
-		EventID:    uuidFromString(event.EventID),
-		TenantID:   uuidFromString(event.TenantID),
-		Type:       event.Type,
-		Source:     event.Source,
-		SourceKind: event.SourceKind,
-		Lineage:    event.Lineage,
-		ChainDepth: event.ChainDepth,
-		Timestamp:  event.Timestamp,
-		Payload:    event.Payload,
+		EventID:        uuidFromString(event.EventID),
+		TenantID:       uuidFromString(event.TenantID),
+		WorkflowRunID:  optionalParsedUUID(event.WorkflowRunID),
+		WorkflowNodeID: event.WorkflowNodeID,
+		Type:           event.Type,
+		Source:         event.Source,
+		SourceKind:     event.SourceKind,
+		Lineage:        event.Lineage,
+		ChainDepth:     event.ChainDepth,
+		Timestamp:      event.Timestamp,
+		Payload:        event.Payload,
 	}
 }
 
@@ -316,6 +321,17 @@ func optionalActivityUUID(id *uuid.UUID) string {
 		return ""
 	}
 	return id.String()
+}
+
+func optionalParsedUUID(value string) *uuid.UUID {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	id, err := uuid.Parse(value)
+	if err != nil {
+		return nil
+	}
+	return &id
 }
 
 func uuidFromString(value string) uuid.UUID {

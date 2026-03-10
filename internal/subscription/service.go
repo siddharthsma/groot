@@ -29,6 +29,7 @@ type Subscription struct {
 	FunctionDestinationID  *uuid.UUID      `json:"function_destination_id,omitempty"`
 	ConnectionID           *uuid.UUID      `json:"connection_id,omitempty"`
 	AgentID                *uuid.UUID      `json:"agent_id,omitempty"`
+	AgentVersionID         *uuid.UUID      `json:"-"`
 	SessionKeyTemplate     *string         `json:"session_key_template,omitempty"`
 	SessionCreateIfMissing bool            `json:"session_create_if_missing"`
 	Operation              *string         `json:"operation,omitempty"`
@@ -40,6 +41,11 @@ type Subscription struct {
 	EmitFailureEvent       bool            `json:"emit_failure_event"`
 	Status                 string          `json:"status"`
 	CreatedAt              time.Time       `json:"-"`
+	WorkflowID             *uuid.UUID      `json:"-"`
+	WorkflowVersionID      *uuid.UUID      `json:"-"`
+	WorkflowNodeID         string          `json:"-"`
+	ManagedByWorkflow      bool            `json:"-"`
+	WorkflowArtifactStatus string          `json:"-"`
 }
 
 type Record struct {
@@ -50,6 +56,7 @@ type Record struct {
 	FunctionDestinationID  *uuid.UUID
 	ConnectionID           *uuid.UUID
 	AgentID                *uuid.UUID
+	AgentVersionID         *uuid.UUID
 	SessionKeyTemplate     *string
 	SessionCreateIfMissing bool
 	Operation              *string
@@ -61,6 +68,11 @@ type Record struct {
 	EmitFailureEvent       bool
 	Status                 string
 	CreatedAt              time.Time
+	WorkflowID             *uuid.UUID
+	WorkflowVersionID      *uuid.UUID
+	WorkflowNodeID         string
+	ManagedByWorkflow      bool
+	WorkflowArtifactStatus string
 }
 
 var (
@@ -74,6 +86,7 @@ var (
 	ErrInvalidOperationParams      = errors.New("operation_params are invalid")
 	ErrGlobalConnectionNotAllowed  = errors.New("global connections are disabled")
 	ErrConnectionForbidden         = errors.New("connection does not belong to tenant")
+	ErrWorkflowManagedImmutable    = errors.New("workflow-managed subscriptions cannot be modified directly")
 )
 
 const (
@@ -197,10 +210,19 @@ func (s *Service) Update(ctx context.Context, tenantID tenant.ID, subscriptionID
 		}
 		return Result{}, fmt.Errorf("get subscription: %w", err)
 	}
+	if existing.ManagedByWorkflow {
+		return Result{}, ErrWorkflowManagedImmutable
+	}
 	record, warnings, err := s.buildRecord(ctx, subscriptionID, existing.Status, tenantID, destinationType, connectedAppID, functionDestinationID, connectionID, agentID, sessionKeyTemplate, sessionCreateIfMissing, operation, operationParams, filter, eventType, eventSource, emitSuccessEvent, emitFailureEvent)
 	if err != nil {
 		return Result{}, err
 	}
+	record.WorkflowID = existing.WorkflowID
+	record.WorkflowVersionID = existing.WorkflowVersionID
+	record.WorkflowNodeID = existing.WorkflowNodeID
+	record.ManagedByWorkflow = existing.ManagedByWorkflow
+	record.WorkflowArtifactStatus = existing.WorkflowArtifactStatus
+	record.AgentVersionID = existing.AgentVersionID
 	sub, err := s.store.UpdateSubscription(ctx, tenantID, subscriptionID, record)
 	if err != nil {
 		if errors.Is(err, ErrSubscriptionNotFound) {
@@ -423,6 +445,16 @@ func (s *Service) Resume(ctx context.Context, tenantID tenant.ID, subscriptionID
 }
 
 func (s *Service) setStatus(ctx context.Context, tenantID tenant.ID, subscriptionID uuid.UUID, status string) (Subscription, error) {
+	current, err := s.store.GetSubscription(ctx, tenantID, subscriptionID)
+	if err != nil {
+		if errors.Is(err, ErrSubscriptionNotFound) {
+			return Subscription{}, ErrSubscriptionNotFound
+		}
+		return Subscription{}, fmt.Errorf("get subscription: %w", err)
+	}
+	if current.ManagedByWorkflow {
+		return Subscription{}, ErrWorkflowManagedImmutable
+	}
 	sub, err := s.store.SetSubscriptionStatus(ctx, tenantID, subscriptionID, status)
 	if err != nil {
 		if errors.Is(err, ErrSubscriptionNotFound) {

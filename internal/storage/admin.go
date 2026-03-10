@@ -55,7 +55,7 @@ func (d *DB) ListConnectionsAdmin(ctx context.Context, tenantID *tenant.ID, conn
 
 func (d *DB) ListSubscriptionsAdmin(ctx context.Context, tenantID *tenant.ID, eventType, destinationType string) ([]subscription.Subscription, error) {
 	query := `
-		SELECT id, tenant_id, connected_app_id, destination_type, function_destination_id, connector_instance_id, agent_id, session_key_template, session_create_if_missing, operation, operation_params, filter_json, event_type, event_source, emit_success_event, emit_failure_event, status, created_at
+		SELECT id, tenant_id, connected_app_id, destination_type, function_destination_id, connector_instance_id, agent_id, agent_version_id, session_key_template, session_create_if_missing, operation, operation_params, filter_json, event_type, event_source, emit_success_event, emit_failure_event, status, created_at, workflow_id, workflow_version_id, workflow_node_id, managed_by_workflow, workflow_artifact_status
 		FROM subscriptions
 		WHERE 1=1
 	`
@@ -95,7 +95,7 @@ func (d *DB) ListSubscriptionsAdmin(ctx context.Context, tenantID *tenant.ID, ev
 
 func (d *DB) ListEventsAdmin(ctx context.Context, tenantID tenant.ID, eventType string, from, to *time.Time, limit int) ([]event.Event, error) {
 	query := `
-		SELECT event_id, tenant_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
+		SELECT event_id, tenant_id, workflow_run_id, workflow_node_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
 		       lineage_integration, lineage_connection_id, lineage_connection_name, lineage_external_account_id,
 		       chain_depth, timestamp, payload, schema_full_name, schema_version
 		FROM events
@@ -138,7 +138,7 @@ func (d *DB) ListEventsAdmin(ctx context.Context, tenantID tenant.ID, eventType 
 
 func (d *DB) ListDeliveryJobsAdmin(ctx context.Context, tenantID tenant.ID, status string, from, to *time.Time, limit int) ([]delivery.Job, error) {
 	query := `
-		SELECT id, tenant_id, subscription_id, event_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
+		SELECT id, tenant_id, subscription_id, event_id, workflow_run_id, workflow_node_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
 		FROM delivery_jobs
 		WHERE tenant_id = $1
 	`

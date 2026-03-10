@@ -17,6 +17,7 @@ type AgentRequest struct {
 	SubscriptionID  string
 	Event           activities.Event
 	AgentID         string
+	AgentVersionID  string
 	SessionKey      string
 	CreateIfMissing bool
 }
@@ -45,7 +46,7 @@ func AgentWorkflow(ctx workflow.Context, req AgentRequest) (AgentResult, error) 
 	})
 
 	var agentRunID string
-	if err := workflow.ExecuteActivity(ctx, "StartAgentRun", req.TenantID, req.Event.EventID, req.SubscriptionID).Get(ctx, &agentRunID); err != nil {
+	if err := workflow.ExecuteActivity(ctx, "StartAgentRun", req.TenantID, req.Event.EventID, req.SubscriptionID, req.Event.WorkflowRunID, req.Event.WorkflowNodeID, req.AgentVersionID).Get(ctx, &agentRunID); err != nil {
 		return AgentResult{}, err
 	}
 

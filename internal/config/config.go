@@ -30,6 +30,7 @@ type Config struct {
 	Admin                      AdminConfig
 	Audit                      AuditConfig
 	DeliveryRetry              DeliveryRetryConfig
+	WorkflowWaitSweepInterval  time.Duration
 	Agent                      AgentConfig
 	AgentRuntime               AgentRuntimeConfig
 	Replay                     ReplayConfig
@@ -224,6 +225,9 @@ func Load() (Config, error) {
 	cfg.Audit = loadAuditConfig()
 	cfg.AllowGlobalInstances = boolEnv("GROOT_ALLOW_GLOBAL_INSTANCES", true)
 	if cfg.DeliveryRetry, err = loadDeliveryRetryConfig(); err != nil {
+		return Config{}, err
+	}
+	if cfg.WorkflowWaitSweepInterval, err = durationEnv("WORKFLOW_WAIT_TIMEOUT_SWEEP_INTERVAL", 5*time.Second); err != nil {
 		return Config{}, err
 	}
 	if cfg.Agent, err = loadAgentConfig(); err != nil {

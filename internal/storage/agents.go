@@ -22,16 +22,42 @@ func (d *DB) CreateAgent(ctx context.Context, record agent.DefinitionRecord) (ag
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $13, $14, $15)
 		RETURNING id, tenant_id, name, instructions, integration, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
 	`
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return agent.Definition{}, fmt.Errorf("begin create agent tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	actor := actorFromContext(ctx)
 	var definition agent.Definition
 	allowedTools, _ := json.Marshal(record.AllowedTools)
 	toolBindings, _ := json.Marshal(record.ToolBindings)
-	err := scanAgentDefinition(d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.Name, record.Instructions, nullableString(optionalStringValue(record.Integration)), nullableString(optionalStringValue(record.Model)), allowedTools, toolBindings, record.MemoryEnabled, record.SessionAutoCreate, record.CreatedAt, record.UpdatedAt, actor.Type, actor.ID, actor.Email), &definition)
+	err = scanAgentDefinition(tx.QueryRowContext(ctx, query, record.ID, record.TenantID, record.Name, record.Instructions, nullableString(optionalStringValue(record.Integration)), nullableString(optionalStringValue(record.Model)), allowedTools, toolBindings, record.MemoryEnabled, record.SessionAutoCreate, record.CreatedAt, record.UpdatedAt, actor.Type, actor.ID, actor.Email), &definition)
 	if err != nil {
 		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
 			return agent.Definition{}, agent.ErrDuplicateName
 		}
 		return agent.Definition{}, fmt.Errorf("insert agent: %w", err)
+	}
+	if err := insertAgentVersion(ctx, tx, actor, agent.VersionRecord{
+		ID:                uuid.New(),
+		AgentID:           definition.ID,
+		TenantID:          definition.TenantID,
+		VersionNumber:     1,
+		Name:              definition.Name,
+		Instructions:      definition.Instructions,
+		Integration:       definition.Integration,
+		Model:             definition.Model,
+		AllowedTools:      definition.AllowedTools,
+		ToolBindings:      definition.ToolBindings,
+		MemoryEnabled:     definition.MemoryEnabled,
+		SessionAutoCreate: definition.SessionAutoCreate,
+		CreatedAt:         definition.CreatedAt,
+	}); err != nil {
+		return agent.Definition{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return agent.Definition{}, fmt.Errorf("commit create agent tx: %w", err)
 	}
 	return definition, nil
 }
@@ -54,11 +80,21 @@ func (d *DB) UpdateAgent(ctx context.Context, agentID uuid.UUID, tenantID tenant
 		WHERE id = $1 AND tenant_id = $2
 		RETURNING id, tenant_id, name, instructions, integration, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, updated_at
 	`
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return agent.Definition{}, fmt.Errorf("begin update agent tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	actor := actorFromContext(ctx)
+	if err := lockAgent(ctx, tx, tenantID, agentID); err != nil {
+		return agent.Definition{}, err
+	}
+
 	var definition agent.Definition
 	allowedTools, _ := json.Marshal(record.AllowedTools)
 	toolBindings, _ := json.Marshal(record.ToolBindings)
-	err := scanAgentDefinition(d.db.QueryRowContext(ctx, query, agentID, tenantID, record.Name, record.Instructions, nullableString(optionalStringValue(record.Integration)), nullableString(optionalStringValue(record.Model)), allowedTools, toolBindings, record.MemoryEnabled, record.SessionAutoCreate, record.UpdatedAt, actor.Type, actor.ID, actor.Email), &definition)
+	err = scanAgentDefinition(tx.QueryRowContext(ctx, query, agentID, tenantID, record.Name, record.Instructions, nullableString(optionalStringValue(record.Integration)), nullableString(optionalStringValue(record.Model)), allowedTools, toolBindings, record.MemoryEnabled, record.SessionAutoCreate, record.UpdatedAt, actor.Type, actor.ID, actor.Email), &definition)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return agent.Definition{}, agent.ErrNotFound
@@ -67,6 +103,30 @@ func (d *DB) UpdateAgent(ctx context.Context, agentID uuid.UUID, tenantID tenant
 			return agent.Definition{}, agent.ErrDuplicateName
 		}
 		return agent.Definition{}, fmt.Errorf("update agent: %w", err)
+	}
+	nextVersion, err := nextAgentVersionNumber(ctx, tx, agentID)
+	if err != nil {
+		return agent.Definition{}, err
+	}
+	if err := insertAgentVersion(ctx, tx, actor, agent.VersionRecord{
+		ID:                uuid.New(),
+		AgentID:           definition.ID,
+		TenantID:          definition.TenantID,
+		VersionNumber:     nextVersion,
+		Name:              definition.Name,
+		Instructions:      definition.Instructions,
+		Integration:       definition.Integration,
+		Model:             definition.Model,
+		AllowedTools:      definition.AllowedTools,
+		ToolBindings:      definition.ToolBindings,
+		MemoryEnabled:     definition.MemoryEnabled,
+		SessionAutoCreate: definition.SessionAutoCreate,
+		CreatedAt:         definition.UpdatedAt,
+	}); err != nil {
+		return agent.Definition{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return agent.Definition{}, fmt.Errorf("commit update agent tx: %w", err)
 	}
 	return definition, nil
 }
@@ -112,6 +172,46 @@ func (d *DB) ListAgents(ctx context.Context, tenantID tenant.ID) ([]agent.Defini
 		return nil, fmt.Errorf("iterate agents: %w", err)
 	}
 	return definitions, nil
+}
+
+func (d *DB) ListAgentVersions(ctx context.Context, tenantID tenant.ID, agentID uuid.UUID) ([]agent.Version, error) {
+	const lockQuery = `
+		SELECT id
+		FROM agents
+		WHERE id = $1 AND tenant_id = $2
+	`
+	var existing uuid.UUID
+	if err := d.db.QueryRowContext(ctx, lockQuery, agentID, tenantID).Scan(&existing); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, agent.ErrNotFound
+		}
+		return nil, fmt.Errorf("check agent exists: %w", err)
+	}
+
+	const query = `
+		SELECT id, agent_id, tenant_id, version_number, name, instructions, integration, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at
+		FROM agent_versions
+		WHERE tenant_id = $1 AND agent_id = $2
+		ORDER BY version_number DESC, created_at DESC
+	`
+	rows, err := d.db.QueryContext(ctx, query, tenantID, agentID)
+	if err != nil {
+		return nil, fmt.Errorf("query agent versions: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var versions []agent.Version
+	for rows.Next() {
+		var version agent.Version
+		if err := scanAgentVersion(rows, &version); err != nil {
+			return nil, fmt.Errorf("scan agent version: %w", err)
+		}
+		versions = append(versions, version)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate agent versions: %w", err)
+	}
+	return versions, nil
 }
 
 func (d *DB) DeleteAgent(ctx context.Context, tenantID tenant.ID, agentID uuid.UUID) error {
@@ -318,21 +418,27 @@ func (d *DB) UpdateAgentRunContext(ctx context.Context, runID uuid.UUID, agentID
 
 func (d *DB) CreateAgentRun(ctx context.Context, record agent.RunRecord) (agent.Run, error) {
 	const query = `
-		INSERT INTO agent_runs (id, tenant_id, input_event_id, subscription_id, agent_id, agent_session_id, status, steps, started_at, created_by_actor_type, created_by_actor_id, created_by_actor_email)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		RETURNING id, tenant_id, input_event_id, subscription_id, agent_id, agent_session_id, status, steps, started_at, completed_at, last_error
+		INSERT INTO agent_runs (id, tenant_id, input_event_id, subscription_id, agent_id, agent_session_id, workflow_run_id, workflow_node_id, agent_version_id, status, steps, started_at, created_by_actor_type, created_by_actor_id, created_by_actor_email)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		RETURNING id, tenant_id, input_event_id, subscription_id, agent_id, agent_session_id, workflow_run_id, workflow_node_id, agent_version_id, status, steps, started_at, completed_at, last_error
 	`
 	actor := actorFromContext(ctx)
 	var run agent.Run
 	var agentID sql.NullString
 	var sessionID sql.NullString
-	err := d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.InputEventID, record.SubscriptionID, record.AgentID, record.AgentSessionID, record.Status, record.Steps, record.StartedAt, actor.Type, actor.ID, actor.Email).Scan(
+	var workflowRunID sql.NullString
+	var workflowNodeID sql.NullString
+	var agentVersionID sql.NullString
+	err := d.db.QueryRowContext(ctx, query, record.ID, record.TenantID, record.InputEventID, record.SubscriptionID, record.AgentID, record.AgentSessionID, record.WorkflowRunID, nullableString(optionalStringValue(record.WorkflowNodeID)), record.AgentVersionID, record.Status, record.Steps, record.StartedAt, actor.Type, actor.ID, actor.Email).Scan(
 		&run.ID,
 		&run.TenantID,
 		&run.InputEventID,
 		&run.SubscriptionID,
 		&agentID,
 		&sessionID,
+		&workflowRunID,
+		&workflowNodeID,
+		&agentVersionID,
 		&run.Status,
 		&run.Steps,
 		&run.StartedAt,
@@ -344,6 +450,12 @@ func (d *DB) CreateAgentRun(ctx context.Context, record agent.RunRecord) (agent.
 	}
 	run.AgentID = parseOptionalUUID(agentID)
 	run.AgentSessionID = parseOptionalUUID(sessionID)
+	run.WorkflowRunID = parseOptionalUUID(workflowRunID)
+	if workflowNodeID.Valid {
+		value := workflowNodeID.String
+		run.WorkflowNodeID = &value
+	}
+	run.AgentVersionID = parseOptionalUUID(agentVersionID)
 	return run, nil
 }
 
@@ -430,4 +542,66 @@ func scanAgentDefinition(row scanner, definition *agent.Definition) error {
 		definition.ToolBindings = map[string]agent.ToolBinding{}
 	}
 	return nil
+}
+
+func insertAgentVersion(ctx context.Context, tx *sql.Tx, actor actorMetadata, record agent.VersionRecord) error {
+	const query = `
+		INSERT INTO agent_versions (id, agent_id, tenant_id, version_number, name, instructions, integration, model, allowed_tools, tool_bindings, memory_enabled, session_auto_create, created_at, created_by_actor_type, created_by_actor_id, created_by_actor_email)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+	`
+	allowedTools, _ := json.Marshal(record.AllowedTools)
+	toolBindings, _ := json.Marshal(record.ToolBindings)
+	if _, err := tx.ExecContext(
+		ctx,
+		query,
+		record.ID,
+		record.AgentID,
+		record.TenantID,
+		record.VersionNumber,
+		record.Name,
+		record.Instructions,
+		nullableString(optionalStringValue(record.Integration)),
+		nullableString(optionalStringValue(record.Model)),
+		allowedTools,
+		toolBindings,
+		record.MemoryEnabled,
+		record.SessionAutoCreate,
+		record.CreatedAt,
+		actor.Type,
+		actor.ID,
+		actor.Email,
+	); err != nil {
+		return fmt.Errorf("insert agent version: %w", err)
+	}
+	return nil
+}
+
+func lockAgent(ctx context.Context, tx *sql.Tx, tenantID tenant.ID, agentID uuid.UUID) error {
+	const query = `
+		SELECT id
+		FROM agents
+		WHERE id = $1 AND tenant_id = $2
+		FOR UPDATE
+	`
+	var id uuid.UUID
+	if err := tx.QueryRowContext(ctx, query, agentID, tenantID).Scan(&id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return agent.ErrNotFound
+		}
+		return fmt.Errorf("lock agent: %w", err)
+	}
+	return nil
+}
+
+func nextAgentVersionNumber(ctx context.Context, tx *sql.Tx, agentID uuid.UUID) (int, error) {
+	const query = `
+		SELECT COALESCE(MAX(version_number), 0) + 1
+		FROM agent_versions
+		WHERE agent_id = $1
+	`
+	var next int
+	if err := tx.QueryRowContext(ctx, query, agentID).Scan(&next); err != nil {
+		return 0, fmt.Errorf("next agent version number: %w", err)
+	}
+	return next, nil
 }

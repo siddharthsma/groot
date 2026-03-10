@@ -44,6 +44,10 @@ import (
 	groottemporal "groot/internal/temporal"
 	"groot/internal/temporal/activities"
 	"groot/internal/tenant"
+	"groot/internal/workflow"
+	builderapi "groot/internal/workflow/builderapi"
+	workflowpublish "groot/internal/workflow/publish"
+	workflowruntime "groot/internal/workflow/runtime"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -56,6 +60,7 @@ type Application struct {
 	httpAddr          string
 	runRouter         func(context.Context) error
 	runDeliveryPoller func(context.Context) error
+	runWorkflowWaits  func(context.Context) error
 	startWorker       func() error
 	stopWorker        func()
 
@@ -65,7 +70,7 @@ type Application struct {
 }
 
 func Bootstrap(ctx context.Context, cfg Config, logger *slog.Logger, metrics *observability.Metrics) (*Application, error) {
-	db, kafkaClient, temporalSDKClient, temporalWorker, handler, routerConsumer, deliveryPoller, err := bootstrapDependencies(ctx, cfg, logger, metrics)
+	db, kafkaClient, temporalSDKClient, temporalWorker, handler, routerConsumer, deliveryPoller, workflowWaitWorker, err := bootstrapDependencies(ctx, cfg, logger, metrics)
 	if err != nil {
 		return nil, err
 	}
@@ -82,6 +87,7 @@ func Bootstrap(ctx context.Context, cfg Config, logger *slog.Logger, metrics *ob
 		httpAddr:          cfg.Runtime.HTTPAddr,
 		runRouter:         routerConsumer.Run,
 		runDeliveryPoller: deliveryPoller.Run,
+		runWorkflowWaits:  workflowWaitWorker.Run,
 		startWorker: func() error {
 			return groottemporal.StartWorker(temporalWorker)
 		},
@@ -105,18 +111,19 @@ func bootstrapDependencies(
 	http.Handler,
 	*router.Consumer,
 	*delivery.Poller,
+	*workflowruntime.TimeoutWorker,
 	error,
 ) {
 	db, err := storage.New(ctx, cfg.Runtime.PostgresDSN)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("connect postgres: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("connect postgres: %w", err)
 	}
 	tenantService := tenant.NewService(db)
 
 	runtimeEdition, err := edition.Resolve(cfg.BuildEdition, cfg.Runtime.Edition, cfg.Runtime.License, cfg.BuildLicensePublicKeyBase64)
 	if err != nil {
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("resolve edition: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("resolve edition: %w", err)
 	}
 	edition.SetRuntime(runtimeEdition)
 	metrics.SetEditionInfo(string(runtimeEdition.BuildEdition), string(runtimeEdition.TenancyMode))
@@ -144,21 +151,21 @@ func bootstrapDependencies(
 	bootstrapTenant, _, err := edition.EnsureCommunityTenant(ctx, runtimeEdition, tenantService, db, cfg.Runtime.CommunityTenantName)
 	if err != nil {
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("enforce edition tenancy: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("enforce edition tenancy: %w", err)
 	}
 	tenantRecords, err := tenantService.ListTenants(ctx)
 	if err != nil {
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("list tenants for tenant-limit validation: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("list tenants for tenant-limit validation: %w", err)
 	}
 	if err := edition.ValidateTenantCount(runtimeEdition, len(tenantRecords)); err != nil {
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate tenant count: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate tenant count: %w", err)
 	}
 	bootstrapTenantID, err := edition.LoadBootstrapTenantID(ctx, runtimeEdition, db)
 	if err != nil {
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load community bootstrap tenant: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load community bootstrap tenant: %w", err)
 	}
 	if bootstrapTenantID == nil && runtimeEdition.IsCommunity() {
 		id := bootstrapTenant.ID
@@ -168,25 +175,25 @@ func bootstrapDependencies(
 	kafkaClient := stream.New(cfg.Runtime.KafkaBrokers)
 	if err := kafkaClient.Check(ctx); err != nil {
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("connect kafka: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("connect kafka: %w", err)
 	}
 	if err := kafkaClient.EnsureTopic(ctx); err != nil {
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("ensure kafka topic: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("ensure kafka topic: %w", err)
 	}
 
 	temporalClient := groottemporal.New(cfg.Runtime.TemporalAddress, cfg.Runtime.TemporalNamespace)
 	if err := temporalClient.Check(ctx); err != nil {
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("connect temporal: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("connect temporal: %w", err)
 	}
 	temporalSDKClient, err := temporalClient.Dial()
 	if err != nil {
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("dial temporal sdk client: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("dial temporal sdk client: %w", err)
 	}
 
 	schemaService := schema.NewService(db, schema.Config{
@@ -199,7 +206,7 @@ func bootstrapDependencies(
 		temporalSDKClient.Close()
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load installed integrations metadata: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load installed integrations metadata: %w", err)
 	}
 	pluginInstalled := make([]pluginloader.InstalledMetadata, 0, len(installedIntegrations.Integrations))
 	for _, current := range installedIntegrations.Integrations {
@@ -215,14 +222,14 @@ func bootstrapDependencies(
 		temporalSDKClient.Close()
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load integration plugins: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("load integration plugins: %w", err)
 	}
 	if cfg.Runtime.Schema.RegistrationMode == schema.RegistrationModeStartup {
 		if err := registry.Validate(); err != nil {
 			temporalSDKClient.Close()
 			_ = kafkaClient.Close()
 			_ = db.Close()
-			return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate integrations: %w", err)
+			return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate integrations: %w", err)
 		}
 		bundles := append(schema.CoreBundles(), registry.BundlesBySource(registry.SourceCore)...)
 		if err := schemaService.RegisterBundles(ctx, bundles); err != nil {
@@ -232,7 +239,7 @@ func bootstrapDependencies(
 				temporalSDKClient.Close()
 				_ = kafkaClient.Close()
 				_ = db.Close()
-				return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register event schemas: %w", err)
+				return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("register event schemas: %w", err)
 			}
 		}
 	}
@@ -241,7 +248,7 @@ func bootstrapDependencies(
 		temporalSDKClient.Close()
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate integration catalog: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("validate integration catalog: %w", err)
 	}
 
 	resultEmitter := event.NewEmitter(kafkaClient, db, logger, metrics, cfg.Runtime.MaxChainDepth, event.WithSchemaResolver(schemaService))
@@ -273,7 +280,7 @@ func bootstrapDependencies(
 		temporalSDKClient.Close()
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("initialize jwt verifier: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("initialize jwt verifier: %w", err)
 	}
 	authService := authn.NewService(cfg.Runtime.Auth, tenantService, apiKeyService, jwtVerifier)
 	adminAuthService, err := adminauth.New(ctx, cfg.Runtime.Admin)
@@ -281,7 +288,7 @@ func bootstrapDependencies(
 		temporalSDKClient.Close()
 		_ = kafkaClient.Close()
 		_ = db.Close()
-		return nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("initialize admin auth: %w", err)
+		return nil, nil, nil, nil, nil, nil, nil, nil, fmt.Errorf("initialize admin auth: %w", err)
 	}
 
 	auditService := audit.NewService(db, cfg.Runtime.Audit.Enabled)
@@ -291,9 +298,13 @@ func bootstrapDependencies(
 	functionService := functiondestination.NewService(db)
 	agentService := agent.NewService(db, functionService)
 	agentExecutor := agent.NewExecutor(db, functionService, cfg.Runtime.Slack, cfg.Runtime.Resend, cfg.Runtime.Notion, cfg.Runtime.LLM, nil)
+	workflowService := workflow.NewService(db)
+	workflowPublishService := workflowpublish.NewService(db, metrics)
+	workflowBuilderService := builderapi.NewService(connectorInstanceService, agentService, workflowService, workflowPublishService)
 	filterService := subscriptionfilter.NewService(schemaService)
 	subscriptionService := subscription.NewService(db, appService, functionService, connectorInstanceService, cfg.Runtime.AllowGlobalInstances, subscription.WithAgentStore(agentService), subscription.WithTemplateValidator(schemaService), subscription.WithFilterValidator(filterService), subscription.WithLogger(logger))
 	eventService := ingest.NewService(kafkaClient, db, logger, metrics, ingest.WithSchemaValidator(schemaService))
+	workflowRuntimeService := workflowruntime.NewService(db, eventService, logger, metrics)
 	eventQueryService := event.NewQueryService(db)
 	deliveryService := delivery.NewService(db, metrics)
 	graphService := graph.NewService(db, graph.Config{
@@ -311,8 +322,9 @@ func bootstrapDependencies(
 	resendService := resend.NewService(cfg.Runtime.Resend, db, eventService, logger, metrics, nil)
 	slackService := slack.NewService(cfg.Runtime.Slack, db, eventService, logger, metrics)
 	stripeService := stripe.NewService(cfg.Runtime.Stripe, db, eventService, logger, metrics)
-	routerConsumer := router.NewConsumer(cfg.Runtime.KafkaBrokers, cfg.Runtime.RouterConsumerGroup, db, logger, metrics)
+	routerConsumer := router.NewConsumer(cfg.Runtime.KafkaBrokers, cfg.Runtime.RouterConsumerGroup, db, workflowRuntimeService, logger, metrics)
 	deliveryPoller := delivery.NewPoller(db, temporalSDKClient, logger, cfg.Runtime.DeliveryRetry, cfg.Runtime.AgentRuntime, cfg.Runtime.DeliveryTaskQueue, metrics)
+	workflowTimeoutWorker := workflowruntime.NewTimeoutWorker(workflowRuntimeService, logger, cfg.Runtime.WorkflowWaitSweepInterval, 100)
 
 	handler := httpapi.NewHandler(httpapi.Options{
 		Logger: logger,
@@ -357,6 +369,10 @@ func bootstrapDependencies(
 		Audit:                    auditService,
 		Agents:                   agentService,
 		AgentTools:               agentExecutor,
+		Workflows:                workflowService,
+		WorkflowPublish:          workflowPublishService,
+		WorkflowRuntime:          workflowRuntimeService,
+		WorkflowBuilder:          workflowBuilderService,
 		SystemAPIKey:             cfg.Runtime.SystemAPIKey,
 		AgentRuntimeSharedSecret: cfg.Runtime.AgentRuntime.SharedSecret,
 		Edition:                  runtimeEdition,
@@ -364,5 +380,5 @@ func bootstrapDependencies(
 		Metrics:                  metrics,
 	})
 
-	return db, kafkaClient, temporalSDKClient, temporalWorker, handler, routerConsumer, deliveryPoller, nil
+	return db, kafkaClient, temporalSDKClient, temporalWorker, handler, routerConsumer, deliveryPoller, workflowTimeoutWorker, nil
 }

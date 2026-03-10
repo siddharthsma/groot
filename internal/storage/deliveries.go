@@ -16,11 +16,11 @@ import (
 
 func (d *DB) CreateDeliveryJob(ctx context.Context, record delivery.JobRecord) (bool, error) {
 	const query = `
-		INSERT INTO delivery_jobs (id, tenant_id, subscription_id, event_id, is_replay, replay_of_event_id, status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO delivery_jobs (id, tenant_id, subscription_id, event_id, workflow_run_id, workflow_node_id, is_replay, replay_of_event_id, status, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT DO NOTHING
 	`
-	result, err := d.db.ExecContext(ctx, query, record.ID, record.TenantID, record.SubscriptionID, record.EventID, record.IsReplay, record.ReplayOfEventID, record.Status, record.CreatedAt)
+	result, err := d.db.ExecContext(ctx, query, record.ID, record.TenantID, record.SubscriptionID, record.EventID, record.WorkflowRunID, nullableString(record.WorkflowNodeID), record.IsReplay, record.ReplayOfEventID, record.Status, record.CreatedAt)
 	if err != nil {
 		return false, fmt.Errorf("insert delivery job: %w", err)
 	}
@@ -45,7 +45,7 @@ func (d *DB) ClaimPendingJobs(ctx context.Context, limit int) ([]delivery.Job, e
 		SET status = 'in_progress'
 		FROM claimed
 		WHERE dj.id = claimed.id
-		RETURNING dj.id, dj.tenant_id, dj.subscription_id, dj.event_id, dj.status, dj.attempts, dj.last_error, dj.completed_at, dj.created_at
+		RETURNING dj.id, dj.tenant_id, dj.subscription_id, dj.event_id, dj.workflow_run_id, dj.workflow_node_id, dj.status, dj.attempts, dj.last_error, dj.completed_at, dj.created_at
 	`
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -62,9 +62,13 @@ func (d *DB) ClaimPendingJobs(ctx context.Context, limit int) ([]delivery.Job, e
 	var jobs []delivery.Job
 	for rows.Next() {
 		var job delivery.Job
-		if err := rows.Scan(&job.ID, &job.TenantID, &job.SubscriptionID, &job.EventID, &job.Status, &job.Attempts, &job.LastError, &job.CompletedAt, &job.CreatedAt); err != nil {
+		var workflowRunID sql.NullString
+		var workflowNodeID sql.NullString
+		if err := rows.Scan(&job.ID, &job.TenantID, &job.SubscriptionID, &job.EventID, &workflowRunID, &workflowNodeID, &job.Status, &job.Attempts, &job.LastError, &job.CompletedAt, &job.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan claimed delivery job: %w", err)
 		}
+		job.WorkflowRunID = parseOptionalUUID(workflowRunID)
+		job.WorkflowNodeID = nullableStringValue(workflowNodeID)
 		jobs = append(jobs, job)
 	}
 	if err := rows.Err(); err != nil {
@@ -90,7 +94,7 @@ func (d *DB) RequeueJob(ctx context.Context, jobID uuid.UUID, lastError string) 
 
 func (d *DB) GetDeliveryJob(ctx context.Context, jobID uuid.UUID) (delivery.Job, error) {
 	const query = `
-		SELECT id, tenant_id, subscription_id, event_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
+		SELECT id, tenant_id, subscription_id, event_id, workflow_run_id, workflow_node_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
 		FROM delivery_jobs
 		WHERE id = $1
 	`
@@ -107,7 +111,7 @@ func (d *DB) GetDeliveryJob(ctx context.Context, jobID uuid.UUID) (delivery.Job,
 
 func (d *DB) ListDeliveryJobs(ctx context.Context, tenantID tenant.ID, status string, subscriptionID, eventID *uuid.UUID, limit int) ([]delivery.Job, error) {
 	query := `
-		SELECT id, tenant_id, subscription_id, event_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
+		SELECT id, tenant_id, subscription_id, event_id, workflow_run_id, workflow_node_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
 		FROM delivery_jobs
 		WHERE tenant_id = $1
 	`
@@ -153,7 +157,7 @@ func (d *DB) ListDeliveryJobs(ctx context.Context, tenantID tenant.ID, status st
 
 func (d *DB) ListDeliveryJobsForEvent(ctx context.Context, tenantID tenant.ID, eventID uuid.UUID, limit int) ([]delivery.Job, error) {
 	const query = `
-		SELECT id, tenant_id, subscription_id, event_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
+		SELECT id, tenant_id, subscription_id, event_id, workflow_run_id, workflow_node_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
 		FROM delivery_jobs
 		WHERE tenant_id = $1 AND event_id = $2
 		ORDER BY created_at ASC
@@ -178,7 +182,7 @@ func (d *DB) ListDeliveryJobsForEvent(ctx context.Context, tenantID tenant.ID, e
 
 func (d *DB) GetDeliveryJobForTenant(ctx context.Context, tenantID tenant.ID, jobID uuid.UUID) (delivery.Job, error) {
 	const query = `
-		SELECT id, tenant_id, subscription_id, event_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
+		SELECT id, tenant_id, subscription_id, event_id, workflow_run_id, workflow_node_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
 		FROM delivery_jobs
 		WHERE id = $1 AND tenant_id = $2
 	`
@@ -198,7 +202,7 @@ func (d *DB) ResetDeliveryJob(ctx context.Context, tenantID tenant.ID, jobID uui
 		UPDATE delivery_jobs
 		SET status = 'pending', attempts = 0, last_error = NULL, completed_at = NULL
 		WHERE id = $1 AND tenant_id = $2 AND status IN ('dead_letter', 'failed')
-		RETURNING id, tenant_id, subscription_id, event_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
+		RETURNING id, tenant_id, subscription_id, event_id, workflow_run_id, workflow_node_id, is_replay, replay_of_event_id, result_event_id, status, attempts, last_error, external_id, last_status_code, completed_at, created_at
 	`
 	var job delivery.Job
 	err := scanDeliveryJob(d.db.QueryRowContext(ctx, query, jobID, tenantID), &job)
@@ -282,9 +286,9 @@ func (d *DB) SaveResultEvent(ctx context.Context, jobID uuid.UUID, event eventpk
 		INSERT INTO events (
 			event_id, tenant_id, type, source, source_kind, source_connection_id, source_connection_name, source_external_account_id,
 			lineage_integration, lineage_connection_id, lineage_connection_name, lineage_external_account_id,
-			chain_depth, timestamp, payload, schema_full_name, schema_version, created_at
+			chain_depth, timestamp, payload, schema_full_name, schema_version, workflow_run_id, workflow_node_id, created_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, NOW())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
 	`
 	var schemaVersion any
 	if event.SchemaVersion > 0 {
@@ -308,6 +312,8 @@ func (d *DB) SaveResultEvent(ctx context.Context, jobID uuid.UUID, event eventpk
 		[]byte(event.Payload),
 		nullableString(event.SchemaFullName),
 		schemaVersion,
+		event.WorkflowRunID,
+		nullableString(event.WorkflowNodeID),
 	); err != nil {
 		return false, fmt.Errorf("insert result event: %w", err)
 	}
@@ -336,11 +342,15 @@ func (d *DB) SaveResultEvent(ctx context.Context, jobID uuid.UUID, event eventpk
 }
 
 func scanDeliveryJob(row scanner, job *delivery.Job) error {
+	var workflowRunID sql.NullString
+	var workflowNodeID sql.NullString
 	var replayOfEventID sql.NullString
 	var resultEventID sql.NullString
-	if err := row.Scan(&job.ID, &job.TenantID, &job.SubscriptionID, &job.EventID, &job.IsReplay, &replayOfEventID, &resultEventID, &job.Status, &job.Attempts, &job.LastError, &job.ExternalID, &job.LastStatusCode, &job.CompletedAt, &job.CreatedAt); err != nil {
+	if err := row.Scan(&job.ID, &job.TenantID, &job.SubscriptionID, &job.EventID, &workflowRunID, &workflowNodeID, &job.IsReplay, &replayOfEventID, &resultEventID, &job.Status, &job.Attempts, &job.LastError, &job.ExternalID, &job.LastStatusCode, &job.CompletedAt, &job.CreatedAt); err != nil {
 		return err
 	}
+	job.WorkflowRunID = parseOptionalUUID(workflowRunID)
+	job.WorkflowNodeID = nullableStringValue(workflowNodeID)
 	job.ReplayOfEventID = parseOptionalUUID(replayOfEventID)
 	job.ResultEventID = parseOptionalUUID(resultEventID)
 	return nil
