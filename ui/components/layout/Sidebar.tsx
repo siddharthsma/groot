@@ -1,7 +1,6 @@
 "use client";
 
-import { Orbit, Sparkles } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
+import Image from "next/image";
 import { SidebarNav } from "@/components/layout/SidebarNav";
 import { TenantBadge } from "@/components/layout/TenantBadge";
 
@@ -13,24 +12,20 @@ export function Sidebar({ compact = false }: SidebarProps) {
   return (
     <aside className="flex h-full flex-col gap-6 border-r border-border/60 bg-sidebar/88 px-4 py-5 backdrop-blur-2xl lg:px-5">
       <div className="space-y-4">
-        <div className="flex items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl border border-primary/20 bg-gradient-to-br from-primary/18 via-primary/6 to-accent/10 text-primary shadow-[var(--shadow-glow-soft)]">
-              <Orbit className="h-5 w-5" />
-            </div>
-            <div>
-              <p className="text-[10px] font-bold uppercase tracking-[0.34em] text-muted-foreground/80">
-                Groot
-              </p>
-              <h1 className="text-lg font-bold tracking-[-0.05em] text-foreground">
-                Cosmic Shell
-              </h1>
-            </div>
+        <div className="flex items-center gap-3 px-3">
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl border border-border/60 bg-surface-2/82 shadow-[0_14px_28px_rgba(3,8,28,0.22)]">
+            <Image
+              src="/groot_logo_trans.png"
+              alt="Groot logo"
+              width={133}
+              height={133}
+              className="h-[8.3rem] w-[8.3rem] object-contain"
+              priority
+            />
           </div>
-          <Badge className="gap-1 border-primary/25 bg-primary/12 text-primary">
-            <Sparkles className="h-3 w-3" />
-            Phase 38B
-          </Badge>
+          <h1 className="text-[1.35rem] font-semibold tracking-[-0.045em] text-foreground sm:text-[1.45rem]">
+            Groot
+          </h1>
         </div>
         {!compact && <TenantBadge />}
       </div>
